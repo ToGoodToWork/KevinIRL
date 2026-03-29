@@ -44,12 +44,13 @@ if [ "$AUDIO_DEVICE" != "none" ]; then
 fi
 
 # Build encoder-specific args
-EXTRA_ARGS=""
+ENCODER_ARGS=""
 if [ "${ENCODER}" = "h264_v4l2m2m" ]; then
-    EXTRA_ARGS="-num_output_buffers ${NUM_OUTPUT_BUFFERS} -num_capture_buffers ${NUM_CAPTURE_BUFFERS}"
+    ENCODER_ARGS="-num_output_buffers ${NUM_OUTPUT_BUFFERS} -num_capture_buffers ${NUM_CAPTURE_BUFFERS}"
+elif [ "${ENCODER}" = "libx264" ]; then
+    ENCODER_ARGS="-preset ${X264_PRESET:-ultrafast} -tune ${X264_TUNE:-zerolatency}"
 fi
 
-# dump_extra ensures SPS/PPS headers are in-band (needed for RTMP servers like mediamtx)
 exec ffmpeg \
     -f v4l2 \
     -input_format "${VIDEO_INPUT_FORMAT}" \
@@ -61,7 +62,6 @@ exec ffmpeg \
     -b:v "${BITRATE}" \
     -g "${GOP_SIZE}" \
     -pix_fmt "${PIX_FMT}" \
-    ${EXTRA_ARGS} \
-    -bsf:v dump_extra \
+    ${ENCODER_ARGS} \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"
