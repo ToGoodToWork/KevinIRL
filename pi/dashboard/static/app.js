@@ -281,8 +281,94 @@ async function loadConfig() {
                 $("settingResolution").value = r;
             }
         }
+
+        // Store current device values, then detect devices to populate dropdowns
+        window._loadedVideoDevice = cfg.VIDEO_DEVICE || "/dev/video0";
+        window._loadedAudioDevice = cfg.AUDIO_DEVICE || "none";
+        detectDevices();
     } catch (e) {
         console.error("Failed to load config:", e);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Device Detection
+// ══════════════════════════════════════════════════════════════
+
+async function detectDevices() {
+    try {
+        const res = await fetch("/api/devices");
+        const devices = await res.json();
+
+        // Populate cameras
+        const camSelect = $("settingCamera");
+        camSelect.innerHTML = "";
+        if (devices.cameras.length === 0) {
+            camSelect.innerHTML = '<option value="/dev/video0">No cameras found</option>';
+        } else {
+            devices.cameras.forEach((cam) => {
+                const opt = document.createElement("option");
+                opt.value = cam.device;
+                opt.textContent = `${cam.name} (${cam.device})`;
+                if (cam.resolutions && cam.resolutions.length > 0) {
+                    opt.dataset.resolutions = JSON.stringify(cam.resolutions);
+                }
+                camSelect.appendChild(opt);
+            });
+        }
+
+        // Select current camera from config
+        if (window._loadedVideoDevice) {
+            const match = [...camSelect.options].find(o => o.value === window._loadedVideoDevice);
+            if (match) camSelect.value = window._loadedVideoDevice;
+        }
+
+        // Update resolution options based on selected camera
+        updateResolutionsForCamera();
+
+        // Populate microphones
+        const micSelect = $("settingAudio");
+        micSelect.innerHTML = '<option value="none">Disabled</option>';
+        devices.microphones.forEach((mic) => {
+            const opt = document.createElement("option");
+            opt.value = mic.device;
+            opt.textContent = mic.name;
+            micSelect.appendChild(opt);
+        });
+
+        // Select current audio device from config
+        if (window._loadedAudioDevice) {
+            const match = [...micSelect.options].find(o => o.value === window._loadedAudioDevice);
+            if (match) micSelect.value = window._loadedAudioDevice;
+        }
+    } catch (e) {
+        console.error("Device detection failed:", e);
+    }
+}
+
+function updateResolutionsForCamera() {
+    const camSelect = $("settingCamera");
+    const resSelect = $("settingResolution");
+    const selected = camSelect.options[camSelect.selectedIndex];
+    if (!selected || !selected.dataset.resolutions) return;
+
+    const resolutions = JSON.parse(selected.dataset.resolutions);
+    const currentRes = resSelect.value;
+    resSelect.innerHTML = "";
+
+    // Map resolutions to friendly names
+    const names = { "1920x1080": "1080p", "1280x720": "720p", "640x480": "480p", "800x600": "600p", "320x240": "240p", "1024x576": "576p" };
+
+    resolutions.forEach((res) => {
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = names[res] || res;
+        resSelect.appendChild(opt);
+    });
+
+    // Re-select previous resolution if available
+    if ([...resSelect.options].find(o => o.value === currentRes)) {
+        resSelect.value = currentRes;
     }
 }
 
@@ -295,6 +381,8 @@ async function saveSettings() {
         BITRATE: $("settingBitrate").value,
         WIDTH: resolution[0],
         HEIGHT: resolution[1],
+        VIDEO_DEVICE: $("settingCamera").value,
+        AUDIO_DEVICE: $("settingAudio").value,
     };
 
     if (proto === "rtmp") {

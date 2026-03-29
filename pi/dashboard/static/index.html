@@ -160,6 +160,26 @@
                 </div>
             </div>
 
+            <div class="divider"></div>
+            <div class="card-header-row">
+                <h2>Devices</h2>
+                <button class="btn btn-sm btn-accent" onclick="detectDevices()">Detect</button>
+            </div>
+            <div class="setting-row">
+                <label>Camera</label>
+                <select id="settingCamera" onchange="updateResolutionsForCamera()">
+                    <option value="/dev/video0">/dev/video0</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label>Microphone</label>
+                <select id="settingAudio">
+                    <option value="none">Disabled</option>
+                </select>
+            </div>
+
+            <div class="divider"></div>
+            <h2>Encoding</h2>
             <div class="setting-row">
                 <label>Bitrate</label>
                 <select id="settingBitrate">
