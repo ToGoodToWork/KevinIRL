@@ -1,0 +1,250 @@
+"""
+KevinStream - Stream Manager
+Manages the FFmpeg SRT streaming process with auto-restart and stats parsing.
+"""
+
+import json
+import logging
+import os
+import re
+import signal
+import subprocess
+import threading
+import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("stream_manager")
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STREAM_SH = os.path.join(SCRIPT_DIR, "stream.sh")
+CONF_FILE = os.path.join(SCRIPT_DIR, "stream.conf")
+
+
+def parse_conf(path: str) -> dict:
+    """Parse shell-style KEY=VALUE config file."""
+    config = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                config[key.strip()] = value.strip()
+    return config
+
+
+class StreamManager:
+    """Manages the FFmpeg streaming process."""
+
+    def __init__(self):
+        self._process: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._stats = {
+            "status": "stopped",
+            "uptime_seconds": 0,
+            "pid": None,
+        }
+        self._srt_stats = {
+            "bitrate_kbps": 0,
+            "rtt_ms": 0,
+            "packet_loss_percent": 0,
+            "send_buffer_ms": 0,
+        }
+        self._start_time: float | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._auto_restart = False
+        self._restart_backoff = 5
+        self._max_backoff = 60
+        self._should_run = False
+
+    @property
+    def stats(self) -> dict:
+        with self._lock:
+            s = dict(self._stats)
+            if self._start_time and s["status"] == "live":
+                s["uptime_seconds"] = int(time.time() - self._start_time)
+            return s
+
+    @property
+    def srt_stats(self) -> dict:
+        with self._lock:
+            return dict(self._srt_stats)
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._process is not None and self._process.poll() is None
+
+    def get_config(self) -> dict:
+        """Read current stream configuration."""
+        return parse_conf(CONF_FILE)
+
+    def update_config(self, updates: dict) -> dict:
+        """Update stream configuration values."""
+        lines = []
+        with open(CONF_FILE) as f:
+            lines = f.readlines()
+
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
+                    continue
+            new_lines.append(line)
+
+        with open(CONF_FILE, "w") as f:
+            f.writelines(new_lines)
+
+        return self.get_config()
+
+    def start(self) -> bool:
+        """Start the FFmpeg streaming process."""
+        with self._lock:
+            if self._process and self._process.poll() is None:
+                log.warning("Stream already running (PID %d)", self._process.pid)
+                return False
+
+        self._should_run = True
+        self._restart_backoff = 5
+        return self._launch()
+
+    def _launch(self) -> bool:
+        """Internal: launch FFmpeg subprocess."""
+        try:
+            log.info("Starting FFmpeg stream...")
+            proc = subprocess.Popen(
+                ["bash", STREAM_SH],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            )
+
+            with self._lock:
+                self._process = proc
+                self._start_time = time.time()
+                self._stats["status"] = "live"
+                self._stats["pid"] = proc.pid
+
+            log.info("FFmpeg started (PID %d)", proc.pid)
+
+            # Start stderr reader for stats parsing
+            self._stderr_thread = threading.Thread(
+                target=self._read_stderr, daemon=True
+            )
+            self._stderr_thread.start()
+
+            # Start watchdog
+            threading.Thread(target=self._watchdog, daemon=True).start()
+
+            return True
+        except Exception as e:
+            log.error("Failed to start FFmpeg: %s", e)
+            with self._lock:
+                self._stats["status"] = "error"
+                self._stats["pid"] = None
+            return False
+
+    def stop(self) -> bool:
+        """Stop the FFmpeg streaming process."""
+        self._should_run = False
+        with self._lock:
+            if not self._process:
+                return False
+
+            proc = self._process
+
+        log.info("Stopping FFmpeg (PID %d)...", proc.pid)
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            log.warning("FFmpeg did not stop, killing...")
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception as e:
+            log.error("Error stopping FFmpeg: %s", e)
+
+        with self._lock:
+            self._process = None
+            self._stats["status"] = "stopped"
+            self._stats["pid"] = None
+            self._start_time = None
+
+        log.info("FFmpeg stopped")
+        return True
+
+    def restart(self) -> bool:
+        """Restart the stream."""
+        self.stop()
+        time.sleep(1)
+        return self.start()
+
+    def _read_stderr(self):
+        """Read FFmpeg stderr for stats and SRT metrics."""
+        proc = self._process
+        if not proc or not proc.stderr:
+            return
+
+        # Regex patterns for SRT stats from FFmpeg output
+        bitrate_re = re.compile(r"bitrate=\s*([\d.]+)kbits/s")
+        speed_re = re.compile(r"speed=\s*([\d.]+)x")
+
+        for line_bytes in proc.stderr:
+            try:
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+            except Exception:
+                continue
+
+            if not line:
+                continue
+
+            # Parse FFmpeg progress lines
+            match = bitrate_re.search(line)
+            if match:
+                with self._lock:
+                    self._srt_stats["bitrate_kbps"] = float(match.group(1))
+
+            # Log important messages
+            if "error" in line.lower() or "warning" in line.lower():
+                log.warning("FFmpeg: %s", line)
+
+    def _watchdog(self):
+        """Monitor FFmpeg process and auto-restart on crash."""
+        proc = self._process
+        if not proc:
+            return
+
+        proc.wait()
+        exit_code = proc.returncode
+
+        with self._lock:
+            self._stats["status"] = "stopped"
+            self._stats["pid"] = None
+            self._process = None
+
+        if not self._should_run:
+            log.info("FFmpeg exited (code %d), not restarting (manual stop)", exit_code)
+            return
+
+        log.warning("FFmpeg crashed (code %d), restarting in %ds...", exit_code, self._restart_backoff)
+        time.sleep(self._restart_backoff)
+
+        if self._should_run:
+            self._restart_backoff = min(self._restart_backoff * 2, self._max_backoff)
+            self._launch()
+
+
+# Singleton instance
+manager = StreamManager()

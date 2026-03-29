@@ -1,0 +1,16 @@
+[Unit]
+Description=KevinStream Dashboard & Stream Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/kevinstream/pi/dashboard
+ExecStart=/opt/kevinstream/venv/bin/python app.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

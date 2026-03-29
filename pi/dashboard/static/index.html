@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KevinStream</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>KevinStream</h1>
+        <div class="status-badge">
+            <div class="status-dot" id="streamDot"></div>
+            <span id="streamStatus">Offline</span>
+            <span id="streamUptime" style="color: var(--text-dim); font-size: 12px;"></span>
+        </div>
+    </header>
+
+    <div class="grid">
+        <!-- System Stats -->
+        <div class="card">
+            <h2>System</h2>
+            <div class="stat-row">
+                <span class="stat-label">CPU</span>
+                <span class="stat-value" id="cpuPercent">--%</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill ok" id="cpuBar" style="width: 0%"></div></div>
+
+            <div class="stat-row" style="margin-top: 12px;">
+                <span class="stat-label">RAM</span>
+                <span class="stat-value" id="ramValue">-- / -- MB</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill ok" id="ramBar" style="width: 0%"></div></div>
+
+            <div class="stat-row" style="margin-top: 12px;">
+                <span class="stat-label">Temperature</span>
+                <span class="stat-value" id="tempValue">--°C</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill ok" id="tempBar" style="width: 0%"></div></div>
+        </div>
+
+        <!-- Stream Stats -->
+        <div class="card">
+            <h2>Stream</h2>
+            <div class="stat-row">
+                <span class="stat-label">Bitrate</span>
+                <span class="stat-value" id="bitrateValue">-- kbps</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">RTT</span>
+                <span class="stat-value" id="rttValue">-- ms</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Packet Loss</span>
+                <span class="stat-value" id="packetLoss">--%</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Internet</span>
+                <span class="stat-value" id="internetStatus">--</span>
+            </div>
+        </div>
+
+        <!-- Stream Controls -->
+        <div class="card">
+            <h2>Stream Control</h2>
+            <div class="btn-group" style="margin-bottom: 16px;">
+                <button class="btn btn-start" id="btnStart" onclick="streamControl('start')">Start</button>
+                <button class="btn btn-stop" id="btnStop" onclick="streamControl('stop')" disabled>Stop</button>
+                <button class="btn btn-restart" id="btnRestart" onclick="streamControl('restart')" disabled>Restart</button>
+            </div>
+
+            <h2 style="margin-top: 16px;">Settings</h2>
+            <div class="setting-row">
+                <label>Bitrate</label>
+                <select id="settingBitrate">
+                    <option value="1500k">1500 kbps</option>
+                    <option value="2000k">2000 kbps</option>
+                    <option value="2500k" selected>2500 kbps</option>
+                    <option value="3000k">3000 kbps</option>
+                    <option value="3500k">3500 kbps</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label>Resolution</label>
+                <select id="settingResolution">
+                    <option value="640x480">480p</option>
+                    <option value="1280x720" selected>720p</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label>SRT Latency</label>
+                <select id="settingLatency">
+                    <option value="300000">300ms (WiFi)</option>
+                    <option value="500000">500ms (Stable 4G)</option>
+                    <option value="800000" selected>800ms (Mobile)</option>
+                    <option value="1200000">1200ms (Lossy)</option>
+                </select>
+            </div>
+            <button class="btn btn-accent" style="margin-top: 12px;" onclick="saveSettings()">Apply Settings</button>
+        </div>
+
+        <!-- OBS Control -->
+        <div class="card">
+            <h2>OBS Remote</h2>
+            <div class="obs-connect">
+                <input type="text" id="obsHost" placeholder="OBS Tailscale IP (e.g. 100.x.y.z)">
+                <input type="password" id="obsPassword" placeholder="Password">
+                <button class="btn btn-accent" id="btnObsConnect" onclick="obsConnect()">Connect</button>
+            </div>
+            <div id="obsStatus" class="ws-status disconnected">Not connected</div>
+
+            <div id="obsControls" style="display: none; margin-top: 16px;">
+                <h2>Streaming</h2>
+                <div class="btn-group" style="margin-bottom: 16px;">
+                    <button class="btn btn-start" onclick="obsAction('StartStream')">Go Live</button>
+                    <button class="btn btn-stop" onclick="obsAction('StopStream')">End Stream</button>
+                    <button class="btn btn-start" onclick="obsAction('StartRecord')">Record</button>
+                    <button class="btn btn-stop" onclick="obsAction('StopRecord')">Stop Rec</button>
+                </div>
+
+                <h2>Scenes</h2>
+                <div class="scene-list" id="obsScenes">
+                    <div style="color: var(--text-dim); font-size: 13px;">Loading scenes...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer style="text-align: center; padding: 16px; color: var(--text-dim); font-size: 12px;">
+        <span class="ws-status" id="wsStatus">Connecting...</span>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
