@@ -18,7 +18,13 @@ ACTUAL_USER="${SUDO_USER:-pi}"
 
 echo "[1/5] Installing system packages..."
 apt-get update -qq
-apt-get install -y -qq ffmpeg python3-pip python3-venv libraspberrypi-bin
+PKGS="ffmpeg python3-pip python3-venv"
+if apt-cache show raspi-utils &>/dev/null 2>&1; then
+    PKGS="$PKGS raspi-utils"
+elif apt-cache show libraspberrypi-bin &>/dev/null 2>&1; then
+    PKGS="$PKGS libraspberrypi-bin"
+fi
+apt-get install -y -qq $PKGS
 
 echo "[2/5] Copying project files..."
 mkdir -p "${INSTALL_DIR}/pi"

@@ -76,13 +76,30 @@ PACKAGES=(
     python3
     python3-pip
     python3-venv
-    libraspberrypi-bin   # for vcgencmd (temperature monitoring)
     curl
     wget
 )
 
+# vcgencmd package differs by Pi OS version
+# Bookworm+: included by default or in raspi-utils
+# Bullseye:  libraspberrypi-bin
+if apt-cache show raspi-utils &>/dev/null 2>&1; then
+    PACKAGES+=(raspi-utils)
+elif apt-cache show libraspberrypi-bin &>/dev/null 2>&1; then
+    PACKAGES+=(libraspberrypi-bin)
+else
+    warn "vcgencmd package not found - temperature monitoring may not work"
+fi
+
 apt-get install -y -qq "${PACKAGES[@]}"
 ok "System packages installed"
+
+# Verify vcgencmd is available
+if command -v vcgencmd &>/dev/null; then
+    ok "vcgencmd available (temperature monitoring)"
+else
+    warn "vcgencmd not found - temperature will use psutil fallback"
+fi
 
 # Verify ffmpeg has SRT support
 if ffmpeg -protocols 2>/dev/null | grep -q srt; then
