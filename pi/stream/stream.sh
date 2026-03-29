@@ -43,6 +43,13 @@ if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-f alsa -i ${AUDIO_DEVICE} -c:a aac -b:a ${AUDIO_BITRATE}"
 fi
 
+# Build encoder-specific args
+EXTRA_ARGS=""
+if [ "${ENCODER}" = "h264_v4l2m2m" ]; then
+    EXTRA_ARGS="-num_output_buffers ${NUM_OUTPUT_BUFFERS} -num_capture_buffers ${NUM_CAPTURE_BUFFERS}"
+fi
+
+# dump_extra ensures SPS/PPS headers are in-band (needed for RTMP servers like mediamtx)
 exec ffmpeg \
     -f v4l2 \
     -input_format "${VIDEO_INPUT_FORMAT}" \
@@ -54,7 +61,7 @@ exec ffmpeg \
     -b:v "${BITRATE}" \
     -g "${GOP_SIZE}" \
     -pix_fmt "${PIX_FMT}" \
-    -num_output_buffers "${NUM_OUTPUT_BUFFERS}" \
-    -num_capture_buffers "${NUM_CAPTURE_BUFFERS}" \
+    ${EXTRA_ARGS} \
+    -bsf:v dump_extra \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"
