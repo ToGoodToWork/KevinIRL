@@ -676,9 +676,10 @@ function closeWifiModal() {
 }
 
 async function wifiConnectConfirm() {
+    const ssid = pendingWifiSsid;
     const password = $("wifiModalPassword").value;
     closeWifiModal();
-    await wifiConnect(pendingWifiSsid, password);
+    await wifiConnect(ssid, password);
 }
 
 async function wifiConnect(ssid, password) {
