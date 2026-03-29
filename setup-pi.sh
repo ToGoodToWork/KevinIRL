@@ -34,7 +34,7 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 INSTALL_DIR="/opt/kevinstream"
-REPO_URL="https://github.com/YOUR_USER/KevinStream.git"  # <-- Change this!
+REPO_URL="https://github.com/ToGoodToWork/KevinIRL.git"
 VENV_DIR="${INSTALL_DIR}/venv"
 
 echo ""
