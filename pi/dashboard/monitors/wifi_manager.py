@@ -140,13 +140,25 @@ def scan_wifi() -> list[dict]:
     _nmcli(["device", "wifi", "rescan"], timeout=10)
     time.sleep(2)  # Give scan time to complete
 
-    ok, output = _nmcli(["-t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE", "device", "wifi", "list"])
+    # Use \n as line sep and : as field sep in terse mode
+    # But SSID and SECURITY can contain colons or special chars
+    # So we use a different approach: parse the human-readable output
+    ok, output = _run([
+        "nmcli", "-f", "SSID,SIGNAL,SECURITY,ACTIVE",
+        "-t", "-e", "no",  # -e no disables escaping
+        "device", "wifi", "list",
+    ])
     if not ok:
         return []
 
     networks = {}
     for line in output.splitlines():
-        parts = line.split(":")
+        # Split from the right side to handle SSIDs with colons
+        # Format: SSID:SIGNAL:SECURITY:ACTIVE
+        # ACTIVE is always yes/no (last field)
+        # SIGNAL is always a number
+        # Split on last 3 colons
+        parts = line.rsplit(":", 3)
         if len(parts) < 4:
             continue
 
@@ -160,7 +172,7 @@ def scan_wifi() -> list[dict]:
             signal = 0
 
         security = parts[2] if parts[2] else "Open"
-        active = parts[3] == "yes"
+        active = parts[3].strip() == "yes"
 
         # Keep strongest signal per SSID
         if ssid not in networks or signal > networks[ssid]["signal"]:
@@ -188,7 +200,11 @@ def scan_wifi() -> list[dict]:
 
 def connect_wifi(ssid: str, password: str = "") -> tuple[bool, str]:
     """Connect to a WiFi network."""
-    log.info("Connecting to WiFi: %s", ssid)
+    if not ssid:
+        log.warning("connect_wifi called with empty SSID")
+        return False, "No SSID provided"
+
+    log.info("Connecting to WiFi: '%s' (password: %s)", ssid, "yes" if password else "no")
 
     # If AP is active on wlan0, disable it first
     if is_ap_mode():
@@ -201,13 +217,14 @@ def connect_wifi(ssid: str, password: str = "") -> tuple[bool, str]:
     if password:
         cmd += ["password", password]
 
+    log.info("Running: nmcli %s", " ".join(cmd))
     ok, output = _nmcli(cmd, timeout=30)
 
     if ok:
-        log.info("Connected to WiFi: %s", ssid)
+        log.info("Connected to WiFi: '%s'", ssid)
         return True, f"Connected to {ssid}"
     else:
-        log.warning("Failed to connect to %s: %s", ssid, output)
+        log.warning("Failed to connect to '%s': %s", ssid, output)
         return False, output or f"Failed to connect to {ssid}"
 
 
