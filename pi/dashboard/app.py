@@ -15,6 +15,7 @@ from flask_sock import Sock
 
 import config
 from monitors import system_monitor, stream_monitor, network_monitor
+from monitors import wifi_manager
 
 # Add stream directory to path for stream_manager import
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stream"))
@@ -33,6 +34,9 @@ sock = Sock(app)
 import psutil
 psutil.cpu_percent(interval=None)
 
+# Start network watchdog (auto AP fallback)
+wifi_manager.start_watchdog()
+
 
 # ── Static / SPA ──────────────────────────────────────────────
 
@@ -45,7 +49,7 @@ def index():
 
 @sock.route("/ws/stats")
 def ws_stats(ws):
-    """Push system + stream stats + logs to connected clients."""
+    """Push system + stream stats + logs + network to connected clients."""
     log.info("WebSocket client connected")
     last_log_id = 0
     try:
@@ -53,6 +57,7 @@ def ws_stats(ws):
             sys_stats = system_monitor.get_stats()
             strm_stats = stream_monitor.get_stats()
             net_stats = network_monitor.get_stats()
+            net_status = wifi_manager.get_network_status()
 
             # Get new log lines since last push
             new_logs = manager.get_logs(since_id=last_log_id)
@@ -63,6 +68,7 @@ def ws_stats(ws):
                 "system": sys_stats,
                 **strm_stats,
                 "connectivity": net_stats,
+                "network": net_status,
                 "logs": new_logs,
                 "timestamp": time.time(),
             }
@@ -162,12 +168,10 @@ def snapshot():
 
 @app.route("/api/system/restart-service", methods=["POST"])
 def restart_service():
-    """Restart the kevinstream systemd service."""
     try:
         subprocess.Popen(
             ["sudo", "systemctl", "restart", "kevinstream"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         return jsonify({"ok": True, "message": "Service restarting..."})
     except Exception as e:
@@ -176,16 +180,68 @@ def restart_service():
 
 @app.route("/api/system/reboot", methods=["POST"])
 def reboot_pi():
-    """Reboot the Raspberry Pi."""
     try:
         subprocess.Popen(
             ["sudo", "reboot"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         return jsonify({"ok": True, "message": "Rebooting..."})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── REST: network management ─────────────────────────────────
+
+@app.route("/api/network/status")
+def network_status():
+    return jsonify(wifi_manager.get_network_status())
+
+
+@app.route("/api/network/wifi/scan")
+def wifi_scan():
+    networks = wifi_manager.scan_wifi()
+    return jsonify(networks)
+
+
+@app.route("/api/network/wifi/connect", methods=["POST"])
+def wifi_connect():
+    data = request.get_json()
+    if not data or "ssid" not in data:
+        return jsonify({"ok": False, "error": "Missing SSID"}), 400
+    ok, msg = wifi_manager.connect_wifi(data["ssid"], data.get("password", ""))
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/network/wifi/disconnect", methods=["POST"])
+def wifi_disconnect():
+    ok, msg = wifi_manager.disconnect_wifi()
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/network/wifi/saved")
+def wifi_saved():
+    return jsonify(wifi_manager.get_saved_networks())
+
+
+@app.route("/api/network/wifi/forget", methods=["POST"])
+def wifi_forget():
+    data = request.get_json()
+    if not data or "ssid" not in data:
+        return jsonify({"ok": False, "error": "Missing SSID"}), 400
+    ok, msg = wifi_manager.forget_network(data["ssid"])
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/network/ap/enable", methods=["POST"])
+def ap_enable():
+    ok, msg = wifi_manager.enable_ap()
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/network/ap/disable", methods=["POST"])
+def ap_disable():
+    ok, msg = wifi_manager.disable_ap()
+    return jsonify({"ok": ok, "message": msg})
 
 
 # ── Health check ──────────────────────────────────────────────

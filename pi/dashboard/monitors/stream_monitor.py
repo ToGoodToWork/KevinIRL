@@ -15,7 +15,7 @@ def get_stats() -> dict:
     srt = manager.srt_stats
     return {
         "stream": stream,
-        "network": {
+        "stream_network": {
             "srt_bitrate_kbps": srt.get("bitrate_kbps", 0),
             "srt_rtt_ms": srt.get("rtt_ms", 0),
             "srt_packet_loss_percent": srt.get("packet_loss_percent", 0),

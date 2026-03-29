@@ -62,9 +62,39 @@
             </div>
         </div>
 
-        <!-- Stream Stats -->
+        <!-- Network Manager -->
         <div class="card">
-            <h2>Network</h2>
+            <div class="card-header-row">
+                <h2>Network</h2>
+                <span class="net-internet-badge" id="netInternetBadge">--</span>
+            </div>
+
+            <!-- Interfaces -->
+            <div id="netInterfaces" class="net-interfaces">
+                <div class="dim small">Loading...</div>
+            </div>
+
+            <!-- AP Mode -->
+            <div class="net-ap-bar" id="netApBar" style="display: none;">
+                <span>AP Mode: <strong id="netApSsid">KevinIRL</strong></span>
+                <button class="btn btn-sm btn-stop" onclick="apDisable()">Disable</button>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- WiFi Browser -->
+            <div class="card-header-row">
+                <h2>WiFi Networks</h2>
+                <button class="btn btn-sm btn-accent" id="btnWifiScan" onclick="wifiScan()">Scan</button>
+            </div>
+            <div id="wifiList" class="wifi-list">
+                <div class="dim small">Click Scan to find networks</div>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- Stream Stats -->
+            <h2>Stream Stats</h2>
             <div class="stat-row">
                 <span class="stat-label">Bitrate</span>
                 <span class="stat-value" id="bitrateValue">-- kbps</span>
@@ -76,10 +106,6 @@
             <div class="stat-row">
                 <span class="stat-label">Packet Loss</span>
                 <span class="stat-value" id="packetLoss">--%</span>
-            </div>
-            <div class="stat-row">
-                <span class="stat-label">Internet</span>
-                <span class="stat-value" id="internetStatus">--</span>
             </div>
         </div>
 
@@ -198,6 +224,22 @@
     <footer>
         <span class="ws-status" id="wsStatus">Connecting...</span>
     </footer>
+
+    <!-- WiFi Connect Modal -->
+    <div class="modal-overlay" id="wifiModal" style="display: none;">
+        <div class="modal">
+            <h3 id="wifiModalTitle">Connect to WiFi</h3>
+            <div class="setting-row" style="margin-top: 12px;">
+                <label>Password</label>
+                <input type="password" id="wifiModalPassword" placeholder="WiFi password">
+            </div>
+            <div class="btn-group" style="margin-top: 16px; justify-content: flex-end;">
+                <button class="btn btn-sm" style="background: var(--border); color: var(--text);" onclick="closeWifiModal()">Cancel</button>
+                <button class="btn btn-sm btn-start" id="btnWifiModalConnect" onclick="wifiConnectConfirm()">Connect</button>
+            </div>
+            <div id="wifiModalStatus" class="dim small" style="margin-top: 8px;"></div>
+        </div>
+    </div>
 
     <script src="/static/app.js"></script>
 </body>

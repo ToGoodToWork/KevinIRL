@@ -27,6 +27,7 @@ function connectStats() {
 
     statsWs.onmessage = (e) => {
         const data = JSON.parse(e.data);
+        // Backend sends "stream_network" for SRT stats, "network" for wifi_manager status
         updateSystemUI(data);
         updateStreamUI(data);
         updateNetworkUI(data);
@@ -96,21 +97,57 @@ function updateStreamUI(data) {
 }
 
 function updateNetworkUI(data) {
-    if (data.network) {
-        $("bitrateValue").textContent = `${Math.round(data.network.srt_bitrate_kbps)} kbps`;
-        $("rttValue").textContent = `${data.network.srt_rtt_ms.toFixed(1)} ms`;
-        $("packetLoss").textContent = `${data.network.srt_packet_loss_percent.toFixed(2)}%`;
+    // Stream SRT stats
+    if (data.stream_network) {
+        $("bitrateValue").textContent = `${Math.round(data.stream_network.srt_bitrate_kbps)} kbps`;
+        $("rttValue").textContent = `${data.stream_network.srt_rtt_ms.toFixed(1)} ms`;
+        $("packetLoss").textContent = `${data.stream_network.srt_packet_loss_percent.toFixed(2)}%`;
     }
 
-    if (data.connectivity) {
-        const inet = $("internetStatus");
-        if (data.connectivity.internet_connected) {
-            inet.textContent = `OK (${data.connectivity.internet_rtt_ms?.toFixed(0) ?? "?"}ms)`;
-            inet.style.color = "var(--green)";
-        } else {
-            inet.textContent = "Offline";
-            inet.style.color = "var(--red)";
-        }
+    // Network manager status (from wifi_manager)
+    if (data.network) {
+        updateNetManagerUI(data.network);
+    }
+}
+
+function updateNetManagerUI(net) {
+    // Internet badge
+    const badge = $("netInternetBadge");
+    if (net.internet) {
+        badge.textContent = "Online";
+        badge.className = "net-internet-badge online";
+    } else {
+        badge.textContent = "Offline";
+        badge.className = "net-internet-badge offline";
+    }
+
+    // Interfaces
+    const container = $("netInterfaces");
+    container.innerHTML = "";
+    if (net.interfaces) {
+        net.interfaces.forEach((iface) => {
+            const div = document.createElement("div");
+            div.className = "net-iface" + (iface.connected ? " connected" : "");
+
+            const icon = iface.type === "wifi" ? "\uD83D\uDCF6" : iface.type === "usb" ? "\uD83D\uDD0C" : "\uD83D\uDD17";
+            const label = iface.type === "wifi" && iface.ssid ? iface.ssid : iface.name;
+            const status = iface.connected ? (iface.ip || "connected") : "disconnected";
+            const signal = iface.type === "wifi" && iface.signal != null ? ` (${iface.signal}%)` : "";
+
+            div.innerHTML = `<span class="net-iface-icon">${icon}</span>
+                <span class="net-iface-label">${escapeHtml(label)}</span>
+                <span class="net-iface-status">${status}${signal}</span>`;
+            container.appendChild(div);
+        });
+    }
+
+    // AP mode bar
+    const apBar = $("netApBar");
+    if (net.ap_mode) {
+        apBar.style.display = "flex";
+        $("netApSsid").textContent = net.ap_ssid || "KevinIRL";
+    } else {
+        apBar.style.display = "none";
     }
 }
 
@@ -438,6 +475,146 @@ function loadObsSettings() {
 function saveObsSettings() {
     localStorage.setItem("obs_host", $("obsHost").value);
     localStorage.setItem("obs_password", $("obsPassword").value);
+}
+
+// ══════════════════════════════════════════════════════════════
+// WiFi Browser
+// ══════════════════════════════════════════════════════════════
+
+let pendingWifiSsid = "";
+
+async function wifiScan() {
+    const btn = $("btnWifiScan");
+    const list = $("wifiList");
+    btn.disabled = true;
+    btn.textContent = "Scanning...";
+    list.innerHTML = '<div class="dim small">Scanning...</div>';
+
+    try {
+        const res = await fetch("/api/network/wifi/scan");
+        const networks = await res.json();
+
+        list.innerHTML = "";
+        if (!networks.length) {
+            list.innerHTML = '<div class="dim small">No networks found</div>';
+            return;
+        }
+
+        networks.forEach((net) => {
+            const div = document.createElement("div");
+            div.className = "wifi-item" + (net.active ? " active" : "");
+            const bars = signalBars(net.signal);
+            const lock = net.security && net.security !== "Open" && net.security !== "--" ? "\uD83D\uDD12" : "";
+            const saved = net.saved ? '<span class="wifi-saved">saved</span>' : "";
+
+            div.innerHTML = `<div class="wifi-item-info">
+                    <span class="wifi-ssid">${escapeHtml(net.ssid)}</span>
+                    ${saved} ${lock}
+                </div>
+                <div class="wifi-item-right">
+                    <span class="wifi-signal">${bars}</span>
+                    <span class="wifi-pct">${net.signal}%</span>
+                </div>`;
+
+            if (net.active) {
+                const dcBtn = document.createElement("button");
+                dcBtn.className = "btn btn-sm btn-stop";
+                dcBtn.textContent = "Disconnect";
+                dcBtn.style.marginLeft = "8px";
+                dcBtn.onclick = (e) => { e.stopPropagation(); wifiDisconnect(); };
+                div.querySelector(".wifi-item-right").appendChild(dcBtn);
+            } else {
+                div.onclick = () => openWifiModal(net.ssid, net.security, net.saved);
+            }
+
+            list.appendChild(div);
+        });
+    } catch (e) {
+        list.innerHTML = '<div class="dim small">Scan failed</div>';
+        console.error("WiFi scan error:", e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Scan";
+    }
+}
+
+function signalBars(signal) {
+    const bars = Math.ceil(signal / 25);
+    let html = "";
+    for (let i = 1; i <= 4; i++) {
+        const h = 4 + i * 3;
+        const active = i <= bars;
+        html += `<span class="signal-bar${active ? " active" : ""}" style="height:${h}px"></span>`;
+    }
+    return `<span class="signal-bars">${html}</span>`;
+}
+
+function openWifiModal(ssid, security, saved) {
+    pendingWifiSsid = ssid;
+    $("wifiModalTitle").textContent = `Connect to "${ssid}"`;
+    $("wifiModalPassword").value = "";
+    $("wifiModalStatus").textContent = "";
+
+    const needsPassword = security && security !== "Open" && security !== "--" && !saved;
+    $("wifiModalPassword").parentElement.style.display = needsPassword ? "flex" : "none";
+
+    if (saved) {
+        // Saved network — connect directly without modal
+        wifiConnect(ssid, "");
+        return;
+    }
+
+    $("wifiModal").style.display = "flex";
+    if (needsPassword) $("wifiModalPassword").focus();
+}
+
+function closeWifiModal() {
+    $("wifiModal").style.display = "none";
+    pendingWifiSsid = "";
+}
+
+async function wifiConnectConfirm() {
+    const password = $("wifiModalPassword").value;
+    closeWifiModal();
+    await wifiConnect(pendingWifiSsid, password);
+}
+
+async function wifiConnect(ssid, password) {
+    const list = $("wifiList");
+    list.innerHTML = `<div class="dim small">Connecting to ${escapeHtml(ssid)}...</div>`;
+
+    try {
+        const res = await fetch("/api/network/wifi/connect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ssid, password }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+            list.innerHTML = `<div class="dim small" style="color: var(--green);">Connected to ${escapeHtml(ssid)}</div>`;
+        } else {
+            list.innerHTML = `<div class="dim small" style="color: var(--red);">Failed: ${escapeHtml(data.message)}</div>`;
+        }
+        // Refresh scan after a moment
+        setTimeout(wifiScan, 3000);
+    } catch (e) {
+        list.innerHTML = '<div class="dim small" style="color: var(--red);">Connection error</div>';
+    }
+}
+
+async function wifiDisconnect() {
+    try {
+        await fetch("/api/network/wifi/disconnect", { method: "POST" });
+        setTimeout(wifiScan, 2000);
+    } catch (e) {
+        console.error("WiFi disconnect error:", e);
+    }
+}
+
+async function apDisable() {
+    try {
+        await fetch("/api/network/ap/disable", { method: "POST" });
+    } catch (e) {}
 }
 
 // ══════════════════════════════════════════════════════════════

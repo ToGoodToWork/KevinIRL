@@ -304,6 +304,104 @@ header h1 { font-size: 18px; font-weight: 600; }
     font-size: 13px;
 }
 
+/* ── Network Manager ── */
+.net-internet-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--text-dim);
+}
+
+.net-internet-badge.online { background: rgba(34, 197, 94, 0.15); color: var(--green); }
+.net-internet-badge.offline { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+
+.net-interfaces { display: flex; flex-direction: column; gap: 4px; }
+
+.net-iface {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--bg);
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+.net-iface.connected { color: var(--text); }
+.net-iface-icon { font-size: 14px; }
+.net-iface-label { flex: 1; font-weight: 500; }
+.net-iface-status { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.net-ap-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    margin-top: 8px;
+    border-radius: 6px;
+    background: rgba(108, 99, 255, 0.1);
+    border: 1px solid var(--accent);
+    font-size: 13px;
+}
+
+/* ── WiFi List ── */
+.wifi-list { display: flex; flex-direction: column; gap: 4px; max-height: 250px; overflow-y: auto; }
+
+.wifi-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--bg);
+    cursor: pointer;
+    transition: background 0.2s;
+    font-size: 13px;
+}
+
+.wifi-item:hover { background: var(--border); }
+.wifi-item.active { border: 1px solid var(--green); background: rgba(34, 197, 94, 0.05); cursor: default; }
+
+.wifi-item-info { display: flex; align-items: center; gap: 6px; flex: 1; }
+.wifi-ssid { font-weight: 500; }
+.wifi-saved { font-size: 10px; color: var(--accent); background: rgba(108, 99, 255, 0.15); padding: 1px 5px; border-radius: 3px; }
+.wifi-item-right { display: flex; align-items: center; gap: 6px; }
+.wifi-pct { font-size: 11px; color: var(--text-dim); min-width: 30px; text-align: right; }
+
+/* Signal bars */
+.signal-bars { display: inline-flex; align-items: flex-end; gap: 1px; height: 16px; }
+.signal-bar { width: 3px; background: var(--border); border-radius: 1px; }
+.signal-bar.active { background: var(--green); }
+
+/* ── WiFi Modal ── */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    min-width: 320px;
+    max-width: 400px;
+}
+
+.modal h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
 /* ── Connection indicator ── */
 .ws-status { font-size: 12px; color: var(--text-dim); }
 .ws-status.connected { color: var(--green); }
@@ -320,4 +418,5 @@ footer {
     .grid { grid-template-columns: 1fr; padding: 12px; }
     header { padding: 12px 16px; }
     .preview-container { max-height: 240px; }
+    .modal { min-width: 280px; margin: 0 16px; }
 }
