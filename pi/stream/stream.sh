@@ -42,8 +42,10 @@ echo "==================="
 
 # Build audio arguments
 AUDIO_ARGS=""
+AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
-    AUDIO_ARGS="-f alsa -i ${AUDIO_DEVICE} -c:a aac -b:a ${AUDIO_BITRATE}"
+    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
+    AUDIO_SYNC_ARGS="-c:a aac -b:a ${AUDIO_BITRATE} -async 1"
 fi
 
 # Build encoder-specific args
@@ -55,7 +57,9 @@ elif [ "${ENCODER}" = "libx264" ]; then
 fi
 
 exec ffmpeg \
+    -use_wallclock_as_timestamps 1 \
     -f v4l2 \
+    -thread_queue_size 1024 \
     -input_format "${VIDEO_INPUT_FORMAT}" \
     -video_size "${WIDTH}x${HEIGHT}" \
     -framerate "${FPS}" \
@@ -66,5 +70,6 @@ exec ffmpeg \
     -g "${GOP_SIZE}" \
     -pix_fmt "${PIX_FMT}" \
     ${ENCODER_ARGS} \
+    ${AUDIO_SYNC_ARGS} \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"
