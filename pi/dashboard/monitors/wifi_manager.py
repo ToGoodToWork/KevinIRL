@@ -139,18 +139,15 @@ def _get_signal_strength(device: str = "wlan0") -> int | None:
 
 def scan_wifi() -> list[dict]:
     """Scan for available WiFi networks."""
-    # Trigger a fresh scan
-    _nmcli(["device", "wifi", "rescan"], timeout=10)
-    time.sleep(2)  # Give scan time to complete
+    # Trigger a fresh scan (needs sudo for reliable results)
+    _run(["sudo", "nmcli", "device", "wifi", "rescan"], timeout=10)
+    time.sleep(3)  # Give scan time to complete
 
-    # Use \n as line sep and : as field sep in terse mode
-    # But SSID and SECURITY can contain colons or special chars
-    # So we use a different approach: parse the human-readable output
     ok, output = _run([
-        "nmcli", "-f", "SSID,SIGNAL,SECURITY,ACTIVE",
-        "-t", "-e", "no",  # -e no disables escaping
-        "device", "wifi", "list",
-    ])
+        "sudo", "nmcli", "-f", "SSID,SIGNAL,SECURITY,ACTIVE",
+        "-t", "-e", "no",
+        "device", "wifi", "list", "--rescan", "yes",
+    ], timeout=15)
     if not ok:
         return []
 
