@@ -171,9 +171,10 @@ def snapshot():
 @app.route("/api/devices")
 def list_devices():
     """List connected cameras and microphones."""
+    import re as _re
     devices = {"cameras": [], "microphones": []}
 
-    # Cameras: parse v4l2 devices
+    # Cameras: parse v4l2 devices (Linux only)
     try:
         result = subprocess.run(
             ["v4l2-ctl", "--list-devices"],
@@ -189,20 +190,17 @@ def list_devices():
                     current_name = line.rstrip(":")
                 elif "/dev/video" in line:
                     dev = line.strip()
-                    # Only include devices that can capture video
                     try:
                         fmt_result = subprocess.run(
                             ["v4l2-ctl", "-d", dev, "--list-formats-ext"],
                             capture_output=True, text=True, timeout=3,
                         )
                         if "Video Capture" in fmt_result.stdout or "mjpeg" in fmt_result.stdout.lower() or "yuyv" in fmt_result.stdout.lower():
-                            # Parse supported resolutions
                             resolutions = []
                             for fmt_line in fmt_result.stdout.splitlines():
                                 fmt_line = fmt_line.strip()
                                 if "Size:" in fmt_line and "x" in fmt_line:
-                                    parts = fmt_line.split()
-                                    for p in parts:
+                                    for p in fmt_line.split():
                                         if "x" in p and p[0].isdigit():
                                             resolutions.append(p)
                             devices["cameras"].append({
@@ -213,7 +211,7 @@ def list_devices():
                             })
                     except Exception:
                         pass
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except Exception:
         pass
 
     # Microphones: parse ALSA capture devices
@@ -223,9 +221,8 @@ def list_devices():
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            import re
             for line in result.stdout.splitlines():
-                m = re.match(r"card (\d+):.*\[(.+?)\].*device (\d+):.*\[(.+?)\]", line)
+                m = _re.match(r"card (\d+):.*\[(.+?)\].*device (\d+):.*\[(.+?)\]", line)
                 if m:
                     card, card_name, device, dev_name = m.groups()
                     devices["microphones"].append({
@@ -233,7 +230,7 @@ def list_devices():
                         "name": f"{card_name} - {dev_name}",
                         "card": int(card),
                     })
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except Exception:
         pass
 
     return jsonify(devices)

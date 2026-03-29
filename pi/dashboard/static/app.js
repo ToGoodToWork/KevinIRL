@@ -77,6 +77,8 @@ function updateStreamUI(data) {
     const dot = $("streamDot");
     const label = $("streamStatus");
 
+    const previewCard = $("previewCard");
+
     if (status === "live") {
         dot.className = "status-dot live";
         label.textContent = "Live";
@@ -86,6 +88,12 @@ function updateStreamUI(data) {
         if (data.stream.uptime_seconds) {
             $("streamUptime").textContent = formatDuration(data.stream.uptime_seconds);
         }
+        // Hide preview when streaming (camera is locked by FFmpeg)
+        if (previewCard) {
+            previewCard.style.display = "none";
+            clearInterval(snapshotTimer);
+            snapshotTimer = null;
+        }
     } else {
         dot.className = status === "error" ? "status-dot error" : "status-dot";
         label.textContent = status === "error" ? "Error" : "Offline";
@@ -93,6 +101,12 @@ function updateStreamUI(data) {
         $("btnStop").disabled = true;
         $("btnRestart").disabled = true;
         $("streamUptime").textContent = "";
+        // Show preview when idle
+        if (previewCard && previewCard.style.display === "none") {
+            previewCard.style.display = "";
+            if ($("autoRefresh").checked) startSnapshotTimer();
+            refreshSnapshot();
+        }
     }
 }
 
