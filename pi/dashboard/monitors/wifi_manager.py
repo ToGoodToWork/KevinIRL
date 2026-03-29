@@ -20,12 +20,15 @@ FALLBACK_CHECK_INTERVAL = 10  # seconds
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[bool, str]:
-    """Run a command and return (success, stdout)."""
+    """Run a command and return (success, output)."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
         )
-        return result.returncode == 0, result.stdout.strip()
+        output = result.stdout.strip()
+        if not output and result.stderr:
+            output = result.stderr.strip()
+        return result.returncode == 0, output
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log.warning("Command failed: %s — %s", " ".join(cmd), e)
         return False, ""
