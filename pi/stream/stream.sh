@@ -1,5 +1,6 @@
 #!/bin/bash
-# KevinStream - FFmpeg SRT streaming script
+# KevinStream - FFmpeg streaming script
+# Supports both RTMP and SRT output
 # Uses Pi 4 hardware encoder (h264_v4l2m2m)
 
 set -euo pipefail
@@ -15,21 +16,32 @@ fi
 # Load configuration
 source "$CONF_FILE"
 
-# Build SRT URL
-SRT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}&passphrase=${SRT_PASSPHRASE}"
+# Build output URL based on protocol
+if [ "${PROTOCOL}" = "rtmp" ]; then
+    OUTPUT_URL="${RTMP_URL}"
+    OUTPUT_FORMAT="flv"
+    echo "=== KevinStream (RTMP) ==="
+    echo "Target: ${RTMP_URL}"
+elif [ "${PROTOCOL}" = "srt" ]; then
+    OUTPUT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}&passphrase=${SRT_PASSPHRASE}"
+    OUTPUT_FORMAT="mpegts"
+    echo "=== KevinStream (SRT) ==="
+    echo "Target: ${SRT_HOST}:${SRT_PORT} (latency: ${SRT_LATENCY}us)"
+else
+    echo "ERROR: Unknown protocol '${PROTOCOL}'. Use 'rtmp' or 'srt'."
+    exit 1
+fi
+
+echo "Video: ${WIDTH}x${HEIGHT}@${FPS}fps ${BITRATE}"
+echo "Encoder: ${ENCODER}"
+echo "Audio: ${AUDIO_DEVICE}"
+echo "==================="
 
 # Build audio arguments
 AUDIO_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-f alsa -i ${AUDIO_DEVICE} -c:a aac -b:a ${AUDIO_BITRATE}"
 fi
-
-echo "=== KevinStream ==="
-echo "Video: ${WIDTH}x${HEIGHT}@${FPS}fps ${BITRATE}"
-echo "Encoder: ${ENCODER}"
-echo "SRT target: ${SRT_HOST}:${SRT_PORT} (latency: ${SRT_LATENCY}us)"
-echo "Audio: ${AUDIO_DEVICE}"
-echo "==================="
 
 exec ffmpeg \
     -f v4l2 \
@@ -44,5 +56,5 @@ exec ffmpeg \
     -pix_fmt "${PIX_FMT}" \
     -num_output_buffers "${NUM_OUTPUT_BUFFERS}" \
     -num_capture_buffers "${NUM_CAPTURE_BUFFERS}" \
-    -f mpegts \
-    "${SRT_URL}"
+    -f "${OUTPUT_FORMAT}" \
+    "${OUTPUT_URL}"
