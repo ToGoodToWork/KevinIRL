@@ -1,15 +1,20 @@
-// KevinStream Dashboard - Main JavaScript
+// KevinStream Dashboard V2
 
 // ── State ──
 let statsWs = null;
 let obsWs = null;
 let obsConnected = false;
 let currentScene = "";
+let snapshotTimer = null;
+let obsRecording = false;
+let obsStreaming = false;
 
-// ── DOM refs ──
 const $ = (id) => document.getElementById(id);
+const MAX_LOG_LINES = 200;
 
-// ── WebSocket: Pi Stats ──
+// ══════════════════════════════════════════════════════════════
+// WebSocket: Pi Stats
+// ══════════════════════════════════════════════════════════════
 
 function connectStats() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -22,11 +27,16 @@ function connectStats() {
 
     statsWs.onmessage = (e) => {
         const data = JSON.parse(e.data);
-        updateUI(data);
+        updateSystemUI(data);
+        updateStreamUI(data);
+        updateNetworkUI(data);
+        if (data.logs && data.logs.length > 0) {
+            appendLogs(data.logs);
+        }
     };
 
     statsWs.onclose = () => {
-        $("wsStatus").textContent = "Dashboard disconnected - reconnecting...";
+        $("wsStatus").textContent = "Disconnected - reconnecting...";
         $("wsStatus").className = "ws-status disconnected";
         setTimeout(connectStats, 3000);
     };
@@ -34,64 +44,64 @@ function connectStats() {
     statsWs.onerror = () => statsWs.close();
 }
 
-// ── UI Updates ──
+// ══════════════════════════════════════════════════════════════
+// UI Updates
+// ══════════════════════════════════════════════════════════════
 
-function updateUI(data) {
-    // System stats
-    if (data.system) {
-        const cpu = data.system.cpu_percent ?? 0;
-        $("cpuPercent").textContent = `${cpu.toFixed(1)}%`;
-        setBar("cpuBar", cpu);
+function updateSystemUI(data) {
+    if (!data.system) return;
 
-        if (data.system.ram) {
-            const ram = data.system.ram;
-            $("ramValue").textContent = `${ram.used_mb} / ${ram.total_mb} MB`;
-            setBar("ramBar", ram.percent);
-        }
+    const cpu = data.system.cpu_percent ?? 0;
+    $("cpuPercent").textContent = `${cpu.toFixed(1)}%`;
+    setBar("cpuBar", cpu);
 
-        const temp = data.system.temperature_c;
-        if (temp != null) {
-            $("tempValue").textContent = `${temp.toFixed(1)}°C`;
-            // Map 30-85°C to 0-100%
-            const pct = Math.min(100, Math.max(0, ((temp - 30) / 55) * 100));
-            setBar("tempBar", pct);
-        }
+    if (data.system.ram) {
+        const ram = data.system.ram;
+        $("ramValue").textContent = `${ram.used_mb} / ${ram.total_mb} MB`;
+        setBar("ramBar", ram.percent);
     }
 
-    // Stream status
-    if (data.stream) {
-        const status = data.stream.status;
-        const dot = $("streamDot");
-        const label = $("streamStatus");
-
-        if (status === "live") {
-            dot.className = "status-dot live";
-            label.textContent = "Live";
-            $("btnStart").disabled = true;
-            $("btnStop").disabled = false;
-            $("btnRestart").disabled = false;
-
-            if (data.stream.uptime_seconds) {
-                $("streamUptime").textContent = formatDuration(data.stream.uptime_seconds);
-            }
-        } else {
-            dot.className = "status-dot";
-            label.textContent = status === "error" ? "Error" : "Offline";
-            $("btnStart").disabled = false;
-            $("btnStop").disabled = true;
-            $("btnRestart").disabled = true;
-            $("streamUptime").textContent = "";
-        }
+    const temp = data.system.temperature_c;
+    if (temp != null) {
+        $("tempValue").textContent = `${temp.toFixed(1)}\u00B0C`;
+        const pct = Math.min(100, Math.max(0, ((temp - 30) / 55) * 100));
+        setBar("tempBar", pct);
     }
+}
 
-    // Network / SRT stats
+function updateStreamUI(data) {
+    if (!data.stream) return;
+
+    const status = data.stream.status;
+    const dot = $("streamDot");
+    const label = $("streamStatus");
+
+    if (status === "live") {
+        dot.className = "status-dot live";
+        label.textContent = "Live";
+        $("btnStart").disabled = true;
+        $("btnStop").disabled = false;
+        $("btnRestart").disabled = false;
+        if (data.stream.uptime_seconds) {
+            $("streamUptime").textContent = formatDuration(data.stream.uptime_seconds);
+        }
+    } else {
+        dot.className = status === "error" ? "status-dot error" : "status-dot";
+        label.textContent = status === "error" ? "Error" : "Offline";
+        $("btnStart").disabled = false;
+        $("btnStop").disabled = true;
+        $("btnRestart").disabled = true;
+        $("streamUptime").textContent = "";
+    }
+}
+
+function updateNetworkUI(data) {
     if (data.network) {
         $("bitrateValue").textContent = `${Math.round(data.network.srt_bitrate_kbps)} kbps`;
         $("rttValue").textContent = `${data.network.srt_rtt_ms.toFixed(1)} ms`;
         $("packetLoss").textContent = `${data.network.srt_packet_loss_percent.toFixed(2)}%`;
     }
 
-    // Internet connectivity
     if (data.connectivity) {
         const inet = $("internetStatus");
         if (data.connectivity.internet_connected) {
@@ -119,28 +129,145 @@ function formatDuration(seconds) {
     return `${s}s`;
 }
 
-// ── Stream Control ──
+// ══════════════════════════════════════════════════════════════
+// Logs
+// ══════════════════════════════════════════════════════════════
+
+function appendLogs(entries) {
+    const terminal = $("logTerminal");
+
+    // Remove placeholder on first log
+    if (terminal.children.length === 1 && terminal.children[0].classList?.contains("dim")) {
+        terminal.innerHTML = "";
+    }
+
+    entries.forEach((entry) => {
+        const div = document.createElement("div");
+        div.className = "log-line";
+        const cls = entry.level === "error" ? "log-error" : entry.level === "warn" ? "log-warn" : "log-info";
+        div.innerHTML = `<span class="log-time">${entry.time}</span> <span class="${cls}">${escapeHtml(entry.text)}</span>`;
+        terminal.appendChild(div);
+    });
+
+    while (terminal.children.length > MAX_LOG_LINES) {
+        terminal.removeChild(terminal.firstChild);
+    }
+
+    terminal.scrollTop = terminal.scrollHeight;
+}
+
+function clearLogs() {
+    $("logTerminal").innerHTML = '<div class="dim small">Logs cleared</div>';
+    fetch("/api/logs/clear", { method: "POST" });
+}
+
+function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Video Preview
+// ══════════════════════════════════════════════════════════════
+
+function refreshSnapshot() {
+    const img = $("previewImg");
+    const overlay = $("previewOverlay");
+    const newImg = new Image();
+    newImg.onload = () => {
+        img.src = newImg.src;
+        overlay.classList.add("hidden");
+    };
+    newImg.onerror = () => {
+        overlay.classList.remove("hidden");
+    };
+    newImg.src = `/api/snapshot?t=${Date.now()}`;
+}
+
+function toggleAutoRefresh() {
+    if ($("autoRefresh").checked) {
+        startSnapshotTimer();
+    } else {
+        clearInterval(snapshotTimer);
+        snapshotTimer = null;
+    }
+}
+
+function startSnapshotTimer() {
+    if (snapshotTimer) clearInterval(snapshotTimer);
+    snapshotTimer = setInterval(refreshSnapshot, 3000);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Stream Control
+// ══════════════════════════════════════════════════════════════
 
 async function streamControl(action) {
     try {
         const res = await fetch(`/api/stream/${action}`, { method: "POST" });
         const data = await res.json();
-        if (!data.ok) {
-            console.warn(`Stream ${action} failed:`, data.error);
-        }
+        if (!data.ok) console.warn(`Stream ${action} failed:`, data.error);
     } catch (e) {
         console.error(`Stream ${action} error:`, e);
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// Settings & Protocol Switcher
+// ══════════════════════════════════════════════════════════════
+
+function onProtocolChange() {
+    const proto = $("settingProtocol").value;
+    $("rtmpSettings").style.display = proto === "rtmp" ? "block" : "none";
+    $("srtSettings").style.display = proto === "srt" ? "block" : "none";
+}
+
+async function loadConfig() {
+    try {
+        const res = await fetch("/api/stream/config");
+        const cfg = await res.json();
+
+        if (cfg.PROTOCOL) {
+            $("settingProtocol").value = cfg.PROTOCOL;
+            onProtocolChange();
+        }
+        if (cfg.RTMP_URL) $("settingRtmpUrl").value = cfg.RTMP_URL;
+        if (cfg.SRT_HOST) $("settingSrtHost").value = cfg.SRT_HOST;
+        if (cfg.SRT_PORT) $("settingSrtPort").value = cfg.SRT_PORT;
+        if (cfg.SRT_PASSPHRASE) $("settingSrtPass").value = cfg.SRT_PASSPHRASE;
+        if (cfg.SRT_LATENCY) $("settingLatency").value = cfg.SRT_LATENCY;
+        if (cfg.BITRATE) $("settingBitrate").value = cfg.BITRATE;
+        if (cfg.WIDTH && cfg.HEIGHT) {
+            const r = `${cfg.WIDTH}x${cfg.HEIGHT}`;
+            if ([...$("settingResolution").options].find(o => o.value === r)) {
+                $("settingResolution").value = r;
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load config:", e);
+    }
+}
+
 async function saveSettings() {
+    const proto = $("settingProtocol").value;
     const resolution = $("settingResolution").value.split("x");
+
     const updates = {
+        PROTOCOL: proto,
         BITRATE: $("settingBitrate").value,
         WIDTH: resolution[0],
         HEIGHT: resolution[1],
-        SRT_LATENCY: $("settingLatency").value,
     };
+
+    if (proto === "rtmp") {
+        updates.RTMP_URL = $("settingRtmpUrl").value;
+    } else {
+        updates.SRT_HOST = $("settingSrtHost").value;
+        updates.SRT_PORT = $("settingSrtPort").value;
+        updates.SRT_PASSPHRASE = $("settingSrtPass").value;
+        updates.SRT_LATENCY = $("settingLatency").value;
+    }
 
     try {
         const res = await fetch("/api/stream/config", {
@@ -150,35 +277,46 @@ async function saveSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-            alert("Settings saved. Restart the stream to apply.");
+            streamControl("restart");
         }
     } catch (e) {
         console.error("Save settings error:", e);
     }
 }
 
-// ── OBS WebSocket Control ──
-// Uses obs-websocket v5 protocol directly (no library dependency)
+// ══════════════════════════════════════════════════════════════
+// System Controls
+// ══════════════════════════════════════════════════════════════
+
+async function restartService() {
+    if (!confirm("Restart the KevinStream service? Dashboard will briefly disconnect.")) return;
+    try { await fetch("/api/system/restart-service", { method: "POST" }); } catch (e) {}
+}
+
+async function rebootPi() {
+    if (!confirm("Reboot the Raspberry Pi? All streams will stop.")) return;
+    if (!confirm("Are you sure?")) return;
+    try { await fetch("/api/system/reboot", { method: "POST" }); } catch (e) {}
+}
+
+// ══════════════════════════════════════════════════════════════
+// OBS WebSocket Control (v5 protocol, no library)
+// ══════════════════════════════════════════════════════════════
 
 function obsConnect() {
     const host = $("obsHost").value.trim();
     const password = $("obsPassword").value;
-    const port = 4455;
-
     if (!host) return;
 
+    saveObsSettings();
     $("obsStatus").textContent = "Connecting...";
     $("obsStatus").className = "ws-status";
 
-    obsWs = new WebSocket(`ws://${host}:${port}`);
-
-    obsWs.onopen = () => {
-        // Wait for Hello message from OBS
-    };
+    obsWs = new WebSocket(`ws://${host}:4455`);
+    obsWs.onopen = () => {};
 
     obsWs.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        handleObsMessage(msg, password);
+        handleObsMessage(JSON.parse(e.data), password);
     };
 
     obsWs.onclose = () => {
@@ -197,30 +335,16 @@ function obsConnect() {
 async function handleObsMessage(msg, password) {
     const op = msg.op;
 
-    // op 0 = Hello
     if (op === 0) {
         const auth = msg.d.authentication;
+        const identify = { rpcVersion: 1, eventSubscriptions: 0xFFFF };
         if (auth) {
-            // Authenticate with challenge-response
             const secret = await sha256(password + auth.salt);
-            const authResponse = await sha256(secret + auth.challenge);
-            obsWs.send(JSON.stringify({
-                op: 1, // Identify
-                d: {
-                    rpcVersion: 1,
-                    authentication: authResponse,
-                }
-            }));
-        } else {
-            // No auth required
-            obsWs.send(JSON.stringify({
-                op: 1,
-                d: { rpcVersion: 1 }
-            }));
+            identify.authentication = await sha256(secret + auth.challenge);
         }
+        obsWs.send(JSON.stringify({ op: 1, d: identify }));
     }
 
-    // op 2 = Identified (auth success)
     if (op === 2) {
         obsConnected = true;
         $("obsStatus").textContent = "Connected to OBS";
@@ -228,29 +352,35 @@ async function handleObsMessage(msg, password) {
         $("obsControls").style.display = "block";
         $("btnObsConnect").textContent = "Disconnect";
         $("btnObsConnect").onclick = obsDisconnect;
-
-        // Fetch scenes
         obsSend("GetSceneList");
+        obsSend("GetStreamStatus");
+        obsSend("GetRecordStatus");
     }
 
-    // op 7 = RequestResponse
     if (op === 7) {
         const type = msg.d.requestType;
         const data = msg.d.responseData;
-
-        if (type === "GetSceneList" && data) {
-            renderScenes(data.scenes, data.currentProgramSceneName);
-        }
+        if (type === "GetSceneList" && data) renderScenes(data.scenes, data.currentProgramSceneName);
+        if (type === "GetStreamStatus" && data) { obsStreaming = data.outputActive; updateObsInfo(); }
+        if (type === "GetRecordStatus" && data) { obsRecording = data.outputActive; updateObsInfo(); }
     }
 
-    // op 5 = Event
     if (op === 5) {
-        const eventType = msg.d.eventType;
-        if (eventType === "CurrentProgramSceneChanged") {
-            currentScene = msg.d.eventData.sceneName;
-            highlightScene(currentScene);
-        }
+        const evt = msg.d.eventType;
+        const ed = msg.d.eventData || {};
+        if (evt === "CurrentProgramSceneChanged") { currentScene = ed.sceneName; highlightScene(currentScene); }
+        if (evt === "StreamStateChanged") { obsStreaming = ed.outputActive; updateObsInfo(); }
+        if (evt === "RecordStateChanged") { obsRecording = ed.outputActive; updateObsInfo(); }
     }
+}
+
+function updateObsInfo() {
+    const el = $("obsStreamInfo");
+    const parts = [];
+    if (obsStreaming) parts.push('<span class="live">STREAMING</span>');
+    if (obsRecording) parts.push('<span class="rec">REC</span>');
+    if (!parts.length) parts.push("Idle");
+    el.innerHTML = parts.join(" &middot; ");
 }
 
 let obsRequestId = 0;
@@ -259,18 +389,12 @@ function obsSend(requestType, requestData) {
     if (!obsWs || !obsConnected) return;
     obsRequestId++;
     obsWs.send(JSON.stringify({
-        op: 6, // Request
-        d: {
-            requestType,
-            requestId: String(obsRequestId),
-            ...(requestData ? { requestData } : {}),
-        }
+        op: 6,
+        d: { requestType, requestId: String(obsRequestId), ...(requestData ? { requestData } : {}) }
     }));
 }
 
-function obsAction(action) {
-    obsSend(action);
-}
+function obsAction(action) { obsSend(action); }
 
 function obsDisconnect() {
     if (obsWs) obsWs.close();
@@ -282,18 +406,12 @@ function renderScenes(scenes, current) {
     currentScene = current;
     const container = $("obsScenes");
     container.innerHTML = "";
-
-    // OBS returns scenes in reverse order
-    const sorted = [...scenes].reverse();
-
-    sorted.forEach((scene) => {
+    [...scenes].reverse().forEach((scene) => {
         const div = document.createElement("div");
         div.className = "scene-item" + (scene.sceneName === current ? " active" : "");
         div.textContent = scene.sceneName;
         div.dataset.name = scene.sceneName;
-        div.onclick = () => {
-            obsSend("SetCurrentProgramScene", { sceneName: scene.sceneName });
-        };
+        div.onclick = () => obsSend("SetCurrentProgramScene", { sceneName: scene.sceneName });
         container.appendChild(div);
     });
 }
@@ -304,16 +422,11 @@ function highlightScene(name) {
     });
 }
 
-// ── Crypto helper for OBS auth ──
-
 async function sha256(message) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(message);
+    const data = new TextEncoder().encode(message);
     const hash = await crypto.subtle.digest("SHA-256", data);
     return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
-
-// ── Load saved OBS settings from localStorage ──
 
 function loadObsSettings() {
     const host = localStorage.getItem("obs_host");
@@ -327,13 +440,12 @@ function saveObsSettings() {
     localStorage.setItem("obs_password", $("obsPassword").value);
 }
 
-// Save settings when connecting
-const origConnect = obsConnect;
-obsConnect = function () {
-    saveObsSettings();
-    origConnect();
-};
+// ══════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════
 
-// ── Init ──
 loadObsSettings();
+loadConfig();
 connectStats();
+startSnapshotTimer();
+refreshSnapshot();

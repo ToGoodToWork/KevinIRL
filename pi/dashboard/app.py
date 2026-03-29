@@ -6,11 +6,11 @@ Flask app serving the dashboard UI and providing WebSocket/REST APIs.
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
-import threading
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 import config
@@ -45,18 +45,25 @@ def index():
 
 @sock.route("/ws/stats")
 def ws_stats(ws):
-    """Push system + stream stats to connected clients."""
+    """Push system + stream stats + logs to connected clients."""
     log.info("WebSocket client connected")
+    last_log_id = 0
     try:
         while True:
             sys_stats = system_monitor.get_stats()
             strm_stats = stream_monitor.get_stats()
             net_stats = network_monitor.get_stats()
 
+            # Get new log lines since last push
+            new_logs = manager.get_logs(since_id=last_log_id)
+            if new_logs:
+                last_log_id = new_logs[-1]["id"]
+
             payload = {
                 "system": sys_stats,
-                **strm_stats,  # includes "stream" and "network" keys
+                **strm_stats,
                 "connectivity": net_stats,
+                "logs": new_logs,
                 "timestamp": time.time(),
             }
             ws.send(json.dumps(payload))
@@ -101,6 +108,84 @@ def stream_config_update():
         return jsonify({"ok": False, "error": "No data"}), 400
     new_config = manager.update_config(updates)
     return jsonify({"ok": True, "config": new_config})
+
+
+# ── REST: logs ────────────────────────────────────────────────
+
+@app.route("/api/logs")
+def get_logs():
+    since = request.args.get("since", 0, type=int)
+    if since:
+        return jsonify(manager.get_logs(since_id=since))
+    return jsonify(manager.get_all_logs())
+
+
+@app.route("/api/logs/clear", methods=["POST"])
+def clear_logs():
+    manager.clear_logs()
+    return jsonify({"ok": True})
+
+
+# ── REST: camera snapshot ─────────────────────────────────────
+
+@app.route("/api/snapshot")
+def snapshot():
+    """Capture a single JPEG frame from the webcam."""
+    conf = manager.get_config()
+    device = conf.get("VIDEO_DEVICE", "/dev/video0")
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "v4l2",
+                "-input_format", "mjpeg",
+                "-video_size", "640x480",
+                "-frames:v", "1",
+                "-i", device,
+                "-f", "mjpeg",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout:
+            return Response(result.stdout, mimetype="image/jpeg")
+        return jsonify({"error": "Failed to capture snapshot"}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Snapshot timeout"}), 500
+    except FileNotFoundError:
+        return jsonify({"error": "ffmpeg not found"}), 500
+
+
+# ── REST: system controls ────────────────────────────────────
+
+@app.route("/api/system/restart-service", methods=["POST"])
+def restart_service():
+    """Restart the kevinstream systemd service."""
+    try:
+        subprocess.Popen(
+            ["sudo", "systemctl", "restart", "kevinstream"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return jsonify({"ok": True, "message": "Service restarting..."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/system/reboot", methods=["POST"])
+def reboot_pi():
+    """Reboot the Raspberry Pi."""
+    try:
+        subprocess.Popen(
+            ["sudo", "reboot"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return jsonify({"ok": True, "message": "Rebooting..."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ── Health check ──────────────────────────────────────────────

@@ -1,9 +1,9 @@
 """
 KevinStream - Stream Manager
-Manages the FFmpeg SRT streaming process with auto-restart and stats parsing.
+Manages the FFmpeg streaming process with auto-restart and stats parsing.
 """
 
-import json
+import collections
 import logging
 import os
 import re
@@ -21,6 +21,8 @@ log = logging.getLogger("stream_manager")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAM_SH = os.path.join(SCRIPT_DIR, "stream.sh")
 CONF_FILE = os.path.join(SCRIPT_DIR, "stream.conf")
+
+MAX_LOG_LINES = 200
 
 
 def parse_conf(path: str) -> dict:
@@ -56,10 +58,13 @@ class StreamManager:
         }
         self._start_time: float | None = None
         self._stderr_thread: threading.Thread | None = None
-        self._auto_restart = False
         self._restart_backoff = 5
         self._max_backoff = 60
         self._should_run = False
+
+        # Log ring buffer
+        self._log_buffer = collections.deque(maxlen=MAX_LOG_LINES)
+        self._log_counter = 0  # monotonic counter for tracking new logs
 
     @property
     def stats(self) -> dict:
@@ -79,6 +84,31 @@ class StreamManager:
         with self._lock:
             return self._process is not None and self._process.poll() is None
 
+    def _add_log(self, line: str, level: str = "info"):
+        """Add a line to the log buffer."""
+        self._log_counter += 1
+        self._log_buffer.append({
+            "id": self._log_counter,
+            "time": time.strftime("%H:%M:%S"),
+            "text": line,
+            "level": level,
+        })
+
+    def get_logs(self, since_id: int = 0) -> list:
+        """Get log lines with id > since_id."""
+        with self._lock:
+            return [entry for entry in self._log_buffer if entry["id"] > since_id]
+
+    def get_all_logs(self) -> list:
+        """Get all log lines."""
+        with self._lock:
+            return list(self._log_buffer)
+
+    def clear_logs(self):
+        """Clear the log buffer."""
+        with self._lock:
+            self._log_buffer.clear()
+
     def get_config(self) -> dict:
         """Read current stream configuration."""
         return parse_conf(CONF_FILE)
@@ -89,7 +119,6 @@ class StreamManager:
         with open(CONF_FILE) as f:
             lines = f.readlines()
 
-        updated_keys = set()
         new_lines = []
         for line in lines:
             stripped = line.strip()
@@ -97,7 +126,6 @@ class StreamManager:
                 key = stripped.split("=", 1)[0].strip()
                 if key in updates:
                     new_lines.append(f"{key}={updates[key]}\n")
-                    updated_keys.add(key)
                     continue
             new_lines.append(line)
 
@@ -120,6 +148,7 @@ class StreamManager:
     def _launch(self) -> bool:
         """Internal: launch FFmpeg subprocess."""
         try:
+            self._add_log("Starting FFmpeg stream...")
             log.info("Starting FFmpeg stream...")
             proc = subprocess.Popen(
                 ["bash", STREAM_SH],
@@ -134,6 +163,7 @@ class StreamManager:
                 self._stats["status"] = "live"
                 self._stats["pid"] = proc.pid
 
+            self._add_log(f"FFmpeg started (PID {proc.pid})")
             log.info("FFmpeg started (PID %d)", proc.pid)
 
             # Start stderr reader for stats parsing
@@ -147,6 +177,7 @@ class StreamManager:
 
             return True
         except Exception as e:
+            self._add_log(f"Failed to start FFmpeg: {e}", "error")
             log.error("Failed to start FFmpeg: %s", e)
             with self._lock:
                 self._stats["status"] = "error"
@@ -162,6 +193,7 @@ class StreamManager:
 
             proc = self._process
 
+        self._add_log(f"Stopping FFmpeg (PID {proc.pid})...")
         log.info("Stopping FFmpeg (PID %d)...", proc.pid)
         try:
             if hasattr(os, "killpg"):
@@ -182,6 +214,7 @@ class StreamManager:
             self._stats["pid"] = None
             self._start_time = None
 
+        self._add_log("FFmpeg stopped")
         log.info("FFmpeg stopped")
         return True
 
@@ -192,14 +225,12 @@ class StreamManager:
         return self.start()
 
     def _read_stderr(self):
-        """Read FFmpeg stderr for stats and SRT metrics."""
+        """Read FFmpeg stderr for stats and log buffer."""
         proc = self._process
         if not proc or not proc.stderr:
             return
 
-        # Regex patterns for SRT stats from FFmpeg output
         bitrate_re = re.compile(r"bitrate=\s*([\d.]+)kbits/s")
-        speed_re = re.compile(r"speed=\s*([\d.]+)x")
 
         for line_bytes in proc.stderr:
             try:
@@ -216,8 +247,19 @@ class StreamManager:
                 with self._lock:
                     self._srt_stats["bitrate_kbps"] = float(match.group(1))
 
-            # Log important messages
-            if "error" in line.lower() or "warning" in line.lower():
+            # Determine log level
+            lower = line.lower()
+            if "error" in lower or "fatal" in lower:
+                level = "error"
+            elif "warning" in lower:
+                level = "warn"
+            else:
+                level = "info"
+
+            # Add all FFmpeg output to log buffer
+            self._add_log(line, level)
+
+            if level in ("error", "warn"):
                 log.warning("FFmpeg: %s", line)
 
     def _watchdog(self):
@@ -235,9 +277,11 @@ class StreamManager:
             self._process = None
 
         if not self._should_run:
+            self._add_log(f"FFmpeg exited (code {exit_code}), not restarting")
             log.info("FFmpeg exited (code %d), not restarting (manual stop)", exit_code)
             return
 
+        self._add_log(f"FFmpeg crashed (code {exit_code}), restarting in {self._restart_backoff}s...", "error")
         log.warning("FFmpeg crashed (code %d), restarting in %ds...", exit_code, self._restart_backoff)
         time.sleep(self._restart_backoff)
 
