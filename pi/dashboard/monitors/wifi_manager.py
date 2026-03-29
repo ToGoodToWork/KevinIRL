@@ -215,13 +215,13 @@ def connect_wifi(ssid: str, password: str = "") -> tuple[bool, str]:
         disable_ap()
         time.sleep(2)
 
-    # Try connecting
-    cmd = ["device", "wifi", "connect", ssid]
+    # Try connecting (use sudo for privilege)
+    cmd = ["sudo", "nmcli", "device", "wifi", "connect", ssid]
     if password:
         cmd += ["password", password]
 
-    log.info("Running: nmcli %s", " ".join(cmd))
-    ok, output = _nmcli(cmd, timeout=30)
+    log.info("Running: %s", " ".join(cmd))
+    ok, output = _run(cmd, timeout=30)
 
     if ok:
         log.info("Connected to WiFi: '%s'", ssid)
