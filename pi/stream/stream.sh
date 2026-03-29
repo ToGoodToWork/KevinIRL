@@ -23,7 +23,10 @@ if [ "${PROTOCOL}" = "rtmp" ]; then
     echo "=== KevinStream (RTMP) ==="
     echo "Target: ${RTMP_URL}"
 elif [ "${PROTOCOL}" = "srt" ]; then
-    OUTPUT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}&passphrase=${SRT_PASSPHRASE}"
+    OUTPUT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}"
+    if [ -n "${SRT_PASSPHRASE}" ]; then
+        OUTPUT_URL="${OUTPUT_URL}&passphrase=${SRT_PASSPHRASE}"
+    fi
     OUTPUT_FORMAT="mpegts"
     echo "=== KevinStream (SRT) ==="
     echo "Target: ${SRT_HOST}:${SRT_PORT} (latency: ${SRT_LATENCY}us)"
