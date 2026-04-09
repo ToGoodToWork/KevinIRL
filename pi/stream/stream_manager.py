@@ -70,6 +70,7 @@ class StreamManager:
         }
         # Rolling window of speed values (last 30 samples) for sustained slow detection
         self._speed_history = collections.deque(maxlen=30)
+        self._last_stats_log_time = 0  # for periodic stats logging
         self._start_time: float | None = None
         self._stderr_thread: threading.Thread | None = None
         self._restart_backoff = 5
@@ -111,13 +112,14 @@ class StreamManager:
             return self._process is not None and self._process.poll() is None
 
     def _add_log(self, line: str, level: str = "info"):
-        """Add a line to the log buffer."""
-        self._log_counter += 1
-        self._log_buffer.append({
-            "id": self._log_counter,
-            "time": time.strftime("%H:%M:%S"),
-            "text": line,
-            "level": level,
+        """Add a line to the log buffer (thread-safe)."""
+        with self._lock:
+            self._log_counter += 1
+            self._log_buffer.append({
+                "id": self._log_counter,
+                "time": time.strftime("%H:%M:%S"),
+                "text": line,
+                "level": level,
         })
 
     def get_logs(self, since_id: int = 0) -> list:
@@ -272,43 +274,31 @@ class StreamManager:
         time.sleep(1)
         return self.start()
 
-    def _read_stderr(self):
-        """Read FFmpeg stderr for stats and log buffer.
+    # ── Compiled regexes (class-level, created once) ──
+    _RE_BITRATE = re.compile(r"bitrate=\s*([\d.]+)kbits/s")
+    _RE_FPS = re.compile(r"fps=\s*([\d.]+)")
+    _RE_FRAME = re.compile(r"frame=\s*(\d+)")
+    _RE_SPEED = re.compile(r"speed=\s*([\d.]+)x")
+    _RE_QUALITY = re.compile(r"q=\s*([\d.-]+)")
+    _RE_DROP = re.compile(r"drop=\s*(\d+)")
+    _RE_TIME = re.compile(r"time=\s*(\d+):(\d+):(\d+)\.(\d+)")
+    _RE_SRT_RTT = re.compile(r"(?:msRTT|rtt)[=:]\s*([\d.]+)", re.IGNORECASE)
+    _RE_SRT_BUF = re.compile(r"msSndBuf[=:]\s*([\d.]+)")
+    _RE_SRT_LOSS_PCT = re.compile(r"loss[=:]?\s*([\d.]+)\s*%", re.IGNORECASE)
+    _RE_SRT_PKT_LOSS = re.compile(r"pktSndLoss[=:]\s*(\d+)")
+    _RE_SRT_PKT_SENT = re.compile(r"pktSent[=:]\s*(\d+)")
 
-        FFmpeg writes progress updates using \\r (carriage return), not \\n.
-        We use os.read() on the fd for unbuffered reads, then split on
-        both \\r and \\n so progress lines are parsed in real time.
-        """
+    def _read_stderr(self):
+        """Read FFmpeg stderr in real time, parse stats, feed log buffer."""
         proc = self._process
         if not proc or not proc.stderr:
             return
-
-        # FFmpeg progress line patterns
-        bitrate_re = re.compile(r"bitrate=\s*([\d.]+)kbits/s")
-        fps_re = re.compile(r"fps=\s*([\d.]+)")
-        frame_re = re.compile(r"frame=\s*(\d+)")
-        speed_re = re.compile(r"speed=\s*([\d.]+)x")
-        quality_re = re.compile(r"q=\s*([\d.-]+)")
-        drop_re = re.compile(r"drop=\s*(\d+)")
-        time_re = re.compile(r"time=\s*(\d+):(\d+):(\d+)\.(\d+)")
-
-        # SRT stats patterns
-        srt_rtt_re = re.compile(r"msRTT[=:]\s*([\d.]+)")
-        srt_loss_re = re.compile(r"pktSndLoss[=:]\s*(\d+)")
-        srt_total_re = re.compile(r"pktSent[=:]\s*(\d+)")
-        srt_buf_re = re.compile(r"msSndBuf[=:]\s*([\d.]+)")
-        srt_rtt_alt = re.compile(r"rtt[=:]\s*([\d.]+)\s*ms", re.IGNORECASE)
-        srt_loss_pct_re = re.compile(r"loss[=:]?\s*([\d.]+)\s*%", re.IGNORECASE)
-
-        total_srt_sent = 0
-        total_srt_lost = 0
 
         fd = proc.stderr.fileno()
         buf = b""
 
         try:
             while True:
-                # os.read returns immediately with available data (unbuffered)
                 try:
                     chunk = os.read(fd, 4096)
                 except OSError:
@@ -317,7 +307,7 @@ class StreamManager:
                     break
                 buf += chunk
 
-                # Process all complete lines in buf right now
+                # Extract and process every complete line (split on \r or \n)
                 while b"\r" in buf or b"\n" in buf:
                     r_pos = buf.find(b"\r")
                     n_pos = buf.find(b"\n")
@@ -338,46 +328,32 @@ class StreamManager:
                     if not line:
                         continue
 
-                    self._process_line(
-                        line, bitrate_re, fps_re, frame_re, speed_re,
-                        quality_re, drop_re, time_re, srt_rtt_re, srt_loss_re,
-                        srt_total_re, srt_buf_re, srt_rtt_alt, srt_loss_pct_re,
-                        total_srt_sent, total_srt_lost,
-                    )
+                    self._process_stderr_line(line)
+
         except Exception as e:
             log.error("stderr reader crashed: %s", e)
             self._add_log(f"Stats reader error: {e}", "error")
 
-    def _process_line(self, line, bitrate_re, fps_re, frame_re, speed_re,
-                      quality_re, drop_re, time_re, srt_rtt_re, srt_loss_re,
-                      srt_total_re, srt_buf_re, srt_rtt_alt, srt_loss_pct_re,
-                      total_srt_sent, total_srt_lost):
-        """Parse a single line from FFmpeg stderr."""
+    def _process_stderr_line(self, line: str):
+        """Parse a single stderr line: update stats and/or add to log."""
 
-        # ── FFmpeg progress line (frame= ... fps= ... bitrate= ...) ──
+        # ── FFmpeg progress line ──
         if "frame=" in line and "bitrate=" in line:
             with self._lock:
-                m = bitrate_re.search(line)
-                if m:
-                    self._srt_stats["bitrate_kbps"] = float(m.group(1))
-                m = fps_re.search(line)
-                if m:
-                    self._encoding_stats["fps"] = float(m.group(1))
-                m = frame_re.search(line)
-                if m:
-                    self._encoding_stats["frame"] = int(m.group(1))
-                m = speed_re.search(line)
-                if m:
-                    self._encoding_stats["speed"] = float(m.group(1))
-                m = quality_re.search(line)
-                if m:
-                    self._encoding_stats["quality"] = float(m.group(1))
-                m = drop_re.search(line)
-                if m:
-                    self._encoding_stats["dropped_frames"] = int(m.group(1))
+                for regex, target, key, conv in (
+                    (self._RE_BITRATE, self._srt_stats, "bitrate_kbps", float),
+                    (self._RE_FPS, self._encoding_stats, "fps", float),
+                    (self._RE_FRAME, self._encoding_stats, "frame", int),
+                    (self._RE_SPEED, self._encoding_stats, "speed", float),
+                    (self._RE_QUALITY, self._encoding_stats, "quality", float),
+                    (self._RE_DROP, self._encoding_stats, "dropped_frames", int),
+                ):
+                    m = regex.search(line)
+                    if m:
+                        target[key] = conv(m.group(1))
 
                 # Drift detection
-                m = time_re.search(line)
+                m = self._RE_TIME.search(line)
                 if m and self._start_time:
                     h, mn, s, cs = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
                     stream_secs = h * 3600 + mn * 60 + s + cs / 100.0
@@ -386,8 +362,7 @@ class StreamManager:
                     self._drift_stats["stream_time_seconds"] = stream_secs
                     self._drift_stats["drift_seconds"] = round(drift, 1)
 
-                    spd = self._encoding_stats.get("speed", 1.0)
-                    self._speed_history.append(spd)
+                    self._speed_history.append(self._encoding_stats.get("speed", 1.0))
                     avg_speed = sum(self._speed_history) / len(self._speed_history) if self._speed_history else 1.0
                     if drift > 10 or avg_speed < 0.85:
                         self._drift_stats["health"] = "critical"
@@ -396,10 +371,20 @@ class StreamManager:
                     else:
                         self._drift_stats["health"] = "ok"
 
-            # Log every 300th frame for debugging
-            m_fr = frame_re.search(line)
-            if m_fr and int(m_fr.group(1)) % 300 == 0:
-                self._add_log(f"[stats] {line}")
+            # Log a stats summary every 10 seconds
+            now = time.time()
+            if now - self._last_stats_log_time >= 10:
+                self._last_stats_log_time = now
+                with self._lock:
+                    fps = self._encoding_stats["fps"]
+                    br = self._srt_stats["bitrate_kbps"]
+                    spd = self._encoding_stats["speed"]
+                    drp = self._encoding_stats["dropped_frames"]
+                    dft = self._drift_stats["drift_seconds"]
+                self._add_log(
+                    f"[stream] fps={fps:.1f} bitrate={br:.0f}kbps speed={spd:.2f}x "
+                    f"drop={drp} drift={dft:.1f}s"
+                )
 
             # Auto-restart on excessive drift
             with self._lock:
@@ -409,35 +394,23 @@ class StreamManager:
                     f"Drift too high ({drift_val:.1f}s > {self.max_drift_restart}s), auto-restarting...",
                     "warn",
                 )
-                log.warning("Auto-restarting stream due to drift: %.1fs", drift_val)
                 threading.Thread(target=self.restart, daemon=True).start()
             return
 
         # ── SRT stats ──
         if "srt" in line.lower() or "msRTT" in line or "pktSnd" in line:
             with self._lock:
-                m = srt_rtt_re.search(line) or srt_rtt_alt.search(line)
+                m = self._RE_SRT_RTT.search(line)
                 if m:
                     self._srt_stats["rtt_ms"] = float(m.group(1))
-                m = srt_buf_re.search(line)
+                m = self._RE_SRT_BUF.search(line)
                 if m:
                     self._srt_stats["send_buffer_ms"] = float(m.group(1))
-                m = srt_loss_pct_re.search(line)
+                m = self._RE_SRT_LOSS_PCT.search(line)
                 if m:
                     self._srt_stats["packet_loss_percent"] = float(m.group(1))
-                else:
-                    m_lost = srt_loss_re.search(line)
-                    m_sent = srt_total_re.search(line)
-                    if m_lost:
-                        total_srt_lost = int(m_lost.group(1))
-                    if m_sent:
-                        total_srt_sent = int(m_sent.group(1))
-                    if total_srt_sent > 0:
-                        self._srt_stats["packet_loss_percent"] = round(
-                            (total_srt_lost / total_srt_sent) * 100, 2
-                        )
 
-        # ── Regular log output ──
+        # ── All non-progress lines go to the log ──
         lower = line.lower()
         if "error" in lower or "fatal" in lower:
             level = "error"
@@ -447,8 +420,6 @@ class StreamManager:
             level = "info"
 
         self._add_log(line, level)
-        if level in ("error", "warn"):
-            log.warning("FFmpeg: %s", line)
 
     def _watchdog(self):
         """Monitor FFmpeg process and auto-restart on crash."""
