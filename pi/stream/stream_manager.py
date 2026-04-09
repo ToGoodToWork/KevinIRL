@@ -276,7 +276,7 @@ class StreamManager:
         """Read FFmpeg stderr for stats and log buffer.
 
         FFmpeg writes progress updates using \\r (carriage return), not \\n.
-        We read raw bytes and split on both \\r and \\n to catch everything.
+        We use os.read() on the fd for unbuffered, non-blocking-style reads.
         """
         proc = self._process
         if not proc or not proc.stderr:
@@ -302,13 +302,17 @@ class StreamManager:
         total_srt_sent = 0
         total_srt_lost = 0
 
+        fd = proc.stderr.fileno()
         buf = b""
-        raw = proc.stderr.raw  # unbuffered: returns data as soon as available
-        while True:
-            chunk = raw.read(4096)
-            if not chunk:
-                break
-            buf += chunk
+        try:
+            while True:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
 
             while b"\r" in buf or b"\n" in buf:
                 # Find earliest line delimiter
@@ -427,6 +431,9 @@ class StreamManager:
                 self._add_log(line, level)
                 if level in ("error", "warn"):
                     log.warning("FFmpeg: %s", line)
+        except Exception as e:
+            log.error("stderr reader crashed: %s", e)
+            self._add_log(f"Stats reader error: {e}", "error")
 
     def _watchdog(self):
         """Monitor FFmpeg process and auto-restart on crash."""
