@@ -177,19 +177,35 @@ def list_devices():
                             ["v4l2-ctl", "-d", dev, "--list-formats-ext"],
                             capture_output=True, text=True, timeout=3,
                         )
-                        if "Video Capture" in fmt_result.stdout or "mjpeg" in fmt_result.stdout.lower() or "yuyv" in fmt_result.stdout.lower():
-                            resolutions = []
-                            for fmt_line in fmt_result.stdout.splitlines():
+                        output = fmt_result.stdout
+                        if "Video Capture" in output or "mjpeg" in output.lower() or "yuyv" in output.lower():
+                            # Parse resolutions and their framerates
+                            # Format: "Size: Discrete WxH" followed by "Interval: Discrete Xs (Yfps)"
+                            res_fps = {}  # "WxH" -> [fps1, fps2, ...]
+                            current_res = None
+                            for fmt_line in output.splitlines():
                                 fmt_line = fmt_line.strip()
                                 if "Size:" in fmt_line and "x" in fmt_line:
                                     for p in fmt_line.split():
                                         if "x" in p and p[0].isdigit():
-                                            resolutions.append(p)
+                                            current_res = p
+                                            if current_res not in res_fps:
+                                                res_fps[current_res] = []
+                                elif "fps" in fmt_line and current_res:
+                                    # Parse "Interval: Discrete 0.033s (30.000 fps)"
+                                    fps_match = _re.search(r"([\d.]+)\s*fps", fmt_line)
+                                    if fps_match:
+                                        fps_val = float(fps_match.group(1))
+                                        if fps_val not in res_fps[current_res]:
+                                            res_fps[current_res].append(fps_val)
+
+                            resolutions = sorted(res_fps.keys(),
+                                key=lambda r: int(r.split("x")[0]), reverse=True)
                             devices["cameras"].append({
                                 "device": dev,
                                 "name": current_name,
-                                "resolutions": sorted(set(resolutions),
-                                    key=lambda r: int(r.split("x")[0]), reverse=True),
+                                "resolutions": resolutions,
+                                "fps_by_resolution": {r: sorted(f, reverse=True) for r, f in res_fps.items()},
                             })
                     except Exception:
                         pass

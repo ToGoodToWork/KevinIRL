@@ -349,6 +349,12 @@ async function loadConfig() {
                 $("settingResolution").value = r;
             }
         }
+        if (cfg.FPS) {
+            const fpsSelect = $("settingFps");
+            if ([...fpsSelect.options].find(o => o.value === cfg.FPS)) {
+                fpsSelect.value = cfg.FPS;
+            }
+        }
 
         // Store current device values, then detect devices to populate dropdowns
         window._loadedVideoDevice = cfg.VIDEO_DEVICE || "/dev/video0";
@@ -379,6 +385,9 @@ async function detectDevices() {
             opt.textContent = `${cleanName} (${cam.device})`;
             if (cam.resolutions && cam.resolutions.length > 0) {
                 opt.dataset.resolutions = JSON.stringify(cam.resolutions);
+            }
+            if (cam.fps_by_resolution) {
+                opt.dataset.fpsByResolution = JSON.stringify(cam.fps_by_resolution);
             }
             camSelect.appendChild(opt);
         });
@@ -436,6 +445,37 @@ function updateResolutionsForCamera() {
     if ([...resSelect.options].find(o => o.value === currentRes)) {
         resSelect.value = currentRes;
     }
+
+    updateFpsForResolution();
+}
+
+function updateFpsForResolution() {
+    const camSelect = $("settingCamera");
+    const resSelect = $("settingResolution");
+    const fpsSelect = $("settingFps");
+    const selected = camSelect.options[camSelect.selectedIndex];
+    if (!selected || !selected.dataset.fpsByResolution) return;
+
+    const fpsByRes = JSON.parse(selected.dataset.fpsByResolution);
+    const currentRes = resSelect.value;
+    const currentFps = fpsSelect.value;
+
+    const fpsValues = fpsByRes[currentRes];
+    if (!fpsValues || fpsValues.length === 0) return;
+
+    fpsSelect.innerHTML = "";
+    fpsValues.forEach((fps) => {
+        const val = Math.round(fps);
+        const opt = document.createElement("option");
+        opt.value = String(val);
+        opt.textContent = `${val} fps`;
+        fpsSelect.appendChild(opt);
+    });
+
+    // Re-select previous FPS if available, otherwise pick first
+    if ([...fpsSelect.options].find(o => o.value === currentFps)) {
+        fpsSelect.value = currentFps;
+    }
 }
 
 async function saveSettings() {
@@ -453,6 +493,8 @@ async function saveSettings() {
     const maxrate = Math.round(bitrateNum * 1.2) + "k";
     const bufsize = Math.round(bitrateNum * 2) + "k";
 
+    const fps = $("settingFps").value;
+
     const updates = {
         PROTOCOL: proto,
         ENCODER: $("settingEncoder").value,
@@ -461,6 +503,8 @@ async function saveSettings() {
         BUFSIZE: bufsize,
         WIDTH: resolution[0],
         HEIGHT: resolution[1],
+        FPS: fps,
+        GOP_SIZE: String(parseInt(fps)),
         VIDEO_DEVICE: $("settingCamera").value,
         AUDIO_DEVICE: $("settingAudio").value,
     };

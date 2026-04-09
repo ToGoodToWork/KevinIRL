@@ -225,10 +225,19 @@
             </div>
             <div class="setting-row">
                 <label>Resolution</label>
-                <select id="settingResolution">
+                <select id="settingResolution" onchange="updateFpsForResolution()">
                     <option value="640x480">480p</option>
                     <option value="1280x720" selected>720p</option>
                     <option value="1920x1080">1080p</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label>FPS</label>
+                <select id="settingFps">
+                    <option value="30" selected>30</option>
+                    <option value="25">25</option>
+                    <option value="20">20</option>
+                    <option value="15">15</option>
                 </select>
             </div>
             <button class="btn btn-lg btn-accent" style="margin-top: 12px; width: 100%;" onclick="saveSettings()">Apply &amp; Restart</button>
