@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 import config
@@ -130,38 +130,6 @@ def get_logs():
 def clear_logs():
     manager.clear_logs()
     return jsonify({"ok": True})
-
-
-# ── REST: camera snapshot ─────────────────────────────────────
-
-@app.route("/api/snapshot")
-def snapshot():
-    """Capture a single JPEG frame from the webcam."""
-    conf = manager.get_config()
-    device = conf.get("VIDEO_DEVICE", "/dev/video0")
-
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-f", "v4l2",
-                "-input_format", "mjpeg",
-                "-video_size", "640x480",
-                "-frames:v", "1",
-                "-i", device,
-                "-f", "mjpeg",
-                "pipe:1",
-            ],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout:
-            return Response(result.stdout, mimetype="image/jpeg")
-        return jsonify({"error": "Failed to capture snapshot"}), 500
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Snapshot timeout"}), 500
-    except FileNotFoundError:
-        return jsonify({"error": "ffmpeg not found"}), 500
 
 
 # ── REST: system controls ────────────────────────────────────

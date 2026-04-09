@@ -17,19 +17,13 @@
     </header>
 
     <div class="grid">
-        <!-- Video Preview (hidden while streaming) -->
-        <div class="card card-wide" id="previewCard">
-            <h2>Camera Preview</h2>
-            <div class="preview-container">
-                <img id="previewImg" src="/api/snapshot" alt="Camera preview" class="preview-img">
-                <div class="preview-overlay" id="previewOverlay">No camera signal</div>
-            </div>
-            <div class="preview-controls">
-                <button class="btn btn-sm btn-accent" onclick="refreshSnapshot()">Refresh</button>
-                <label class="toggle-label">
-                    <input type="checkbox" id="autoRefresh" checked onchange="toggleAutoRefresh()">
-                    Auto-refresh (3s)
-                </label>
+        <!-- Stream Control (primary action, top of page) -->
+        <div class="card card-wide">
+            <h2>Stream Control</h2>
+            <div class="btn-group-large">
+                <button class="btn btn-lg btn-start" id="btnStart" onclick="streamControl('start')">Start</button>
+                <button class="btn btn-lg btn-stop" id="btnStop" onclick="streamControl('stop')" disabled>Stop</button>
+                <button class="btn btn-lg btn-restart" id="btnRestart" onclick="streamControl('restart')" disabled>Restart</button>
             </div>
         </div>
 
@@ -56,9 +50,9 @@
 
             <div class="divider"></div>
             <h2>Actions</h2>
-            <div class="btn-group">
-                <button class="btn btn-restart btn-sm" onclick="restartService()">Restart Service</button>
-                <button class="btn btn-stop btn-sm" onclick="rebootPi()">Reboot Pi</button>
+            <div class="btn-group-large">
+                <button class="btn btn-lg btn-restart" onclick="restartService()">Restart Service</button>
+                <button class="btn btn-lg btn-stop" onclick="rebootPi()">Reboot Pi</button>
             </div>
         </div>
 
@@ -109,16 +103,9 @@
             </div>
         </div>
 
-        <!-- Stream Controls -->
+        <!-- Stream Settings -->
         <div class="card">
-            <h2>Stream Control</h2>
-            <div class="btn-group" style="margin-bottom: 16px;">
-                <button class="btn btn-start" id="btnStart" onclick="streamControl('start')">Start</button>
-                <button class="btn btn-stop" id="btnStop" onclick="streamControl('stop')" disabled>Stop</button>
-                <button class="btn btn-restart" id="btnRestart" onclick="streamControl('restart')" disabled>Restart</button>
-            </div>
-
-            <h2 style="margin-top: 16px;">Settings</h2>
+            <h2>Settings</h2>
             <div class="setting-row">
                 <label>Protocol</label>
                 <select id="settingProtocol" onchange="onProtocolChange()">
