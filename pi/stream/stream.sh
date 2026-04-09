@@ -47,8 +47,9 @@ AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac 1 -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
-    # -async 1 corrects A/V drift by resampling audio to match video timestamps
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -async 1"
+    # aresample=async=1 continuously corrects A/V drift between independent USB devices
+    # Unlike -async 1 (deprecated, only corrects at start), this handles ongoing clock skew
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
 fi
 
 # Build encoder-specific args and rate control
