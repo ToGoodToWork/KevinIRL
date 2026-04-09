@@ -140,11 +140,11 @@ class StreamManager:
         return parse_conf(CONF_FILE)
 
     def update_config(self, updates: dict) -> dict:
-        """Update stream configuration values."""
-        lines = []
+        """Update stream configuration values. Adds new keys if they don't exist."""
         with open(CONF_FILE) as f:
             lines = f.readlines()
 
+        updated_keys = set()
         new_lines = []
         for line in lines:
             stripped = line.strip()
@@ -152,12 +152,21 @@ class StreamManager:
                 key = stripped.split("=", 1)[0].strip()
                 if key in updates:
                     new_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
                     continue
             new_lines.append(line)
+
+        # Append any new keys that weren't already in the file
+        missing = set(updates.keys()) - updated_keys
+        if missing:
+            new_lines.append("\n")
+            for key in sorted(missing):
+                new_lines.append(f"{key}={updates[key]}\n")
 
         with open(CONF_FILE, "w") as f:
             f.writelines(new_lines)
 
+        log.info("Config updated: %s", ", ".join(f"{k}={updates[k]}" for k in updates))
         return self.get_config()
 
     def start(self) -> bool:

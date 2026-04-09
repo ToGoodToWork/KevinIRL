@@ -112,8 +112,15 @@ def stream_config_update():
     updates = request.get_json()
     if not updates:
         return jsonify({"ok": False, "error": "No data"}), 400
-    new_config = manager.update_config(updates)
-    return jsonify({"ok": True, "config": new_config})
+    try:
+        new_config = manager.update_config(updates)
+        return jsonify({"ok": True, "config": new_config})
+    except PermissionError:
+        log.error("Cannot write stream.conf - permission denied")
+        return jsonify({"ok": False, "error": "Permission denied writing config. Run: sudo chmod 666 /opt/kevinstream/pi/stream/stream.conf"}), 500
+    except Exception as e:
+        log.error("Config update failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ── REST: logs ────────────────────────────────────────────────

@@ -432,6 +432,11 @@ function updateResolutionsForCamera() {
 }
 
 async function saveSettings() {
+    const btn = document.querySelector('[onclick="saveSettings()"]');
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+
     const proto = $("settingProtocol").value;
     const resolution = $("settingResolution").value.split("x");
 
@@ -469,10 +474,40 @@ async function saveSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-            streamControl("restart");
+            btn.textContent = "Saved! Restarting...";
+            btn.style.background = "var(--green)";
+            btn.style.color = "#000";
+            await streamControl("restart");
+            setTimeout(() => {
+                btn.textContent = origText;
+                btn.style.background = "";
+                btn.style.color = "";
+                btn.disabled = false;
+            }, 2000);
+        } else {
+            btn.textContent = "Failed!";
+            btn.style.background = "var(--red)";
+            btn.style.color = "#fff";
+            console.error("Save failed:", data.error);
+            alert("Save failed: " + (data.error || "Unknown error"));
+            setTimeout(() => {
+                btn.textContent = origText;
+                btn.style.background = "";
+                btn.style.color = "";
+                btn.disabled = false;
+            }, 3000);
         }
     } catch (e) {
         console.error("Save settings error:", e);
+        btn.textContent = "Error!";
+        btn.style.background = "var(--red)";
+        alert("Could not save settings: " + e.message);
+        setTimeout(() => {
+            btn.textContent = origText;
+            btn.style.background = "";
+            btn.style.color = "";
+            btn.disabled = false;
+        }, 3000);
     }
 }
 
