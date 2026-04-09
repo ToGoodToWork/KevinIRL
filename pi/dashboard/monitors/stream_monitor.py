@@ -10,9 +10,10 @@ from stream_manager import manager
 
 
 def get_stats() -> dict:
-    """Get combined stream and SRT stats."""
+    """Get combined stream, SRT, and encoding stats."""
     stream = manager.stats
     srt = manager.srt_stats
+    enc = manager.encoding_stats
     return {
         "stream": stream,
         "stream_network": {
@@ -20,5 +21,12 @@ def get_stats() -> dict:
             "srt_rtt_ms": srt.get("rtt_ms", 0),
             "srt_packet_loss_percent": srt.get("packet_loss_percent", 0),
             "srt_send_buffer_ms": srt.get("send_buffer_ms", 0),
+        },
+        "encoding": {
+            "fps": enc.get("fps", 0),
+            "frame": enc.get("frame", 0),
+            "speed": enc.get("speed", 0),
+            "quality": enc.get("quality", 0),
+            "dropped_frames": enc.get("dropped_frames", 0),
         },
     }

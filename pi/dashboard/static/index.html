@@ -88,7 +88,11 @@
             <div class="divider"></div>
 
             <!-- Stream Stats -->
-            <h2>Stream Stats</h2>
+            <div class="card-header-row">
+                <h2>Stream Stats</h2>
+                <button class="btn btn-sm btn-accent" id="btnCheckTarget" onclick="checkTarget()">Check Connection</button>
+            </div>
+            <div id="targetCheckResult" style="display: none; margin-bottom: 8px;"></div>
             <div class="stat-row">
                 <span class="stat-label">Bitrate</span>
                 <span class="stat-value" id="bitrateValue">-- kbps</span>
@@ -100,6 +104,23 @@
             <div class="stat-row">
                 <span class="stat-label">Packet Loss</span>
                 <span class="stat-value" id="packetLoss">--%</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- Encoding Health -->
+            <h2>Encoding</h2>
+            <div class="stat-row">
+                <span class="stat-label">FPS</span>
+                <span class="stat-value" id="encFps">--</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Speed</span>
+                <span class="stat-value" id="encSpeed">--x</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Dropped Frames</span>
+                <span class="stat-value" id="encDropped">0</span>
             </div>
         </div>
 
@@ -176,6 +197,9 @@
                     <option value="2500k" selected>2500 kbps</option>
                     <option value="3000k">3000 kbps</option>
                     <option value="3500k">3500 kbps</option>
+                    <option value="4000k">4000 kbps</option>
+                    <option value="5000k">5000 kbps</option>
+                    <option value="6000k">6000 kbps</option>
                 </select>
             </div>
             <div class="setting-row">

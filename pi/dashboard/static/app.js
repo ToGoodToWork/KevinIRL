@@ -98,9 +98,36 @@ function updateStreamUI(data) {
 function updateNetworkUI(data) {
     // Stream SRT stats
     if (data.stream_network) {
-        $("bitrateValue").textContent = `${Math.round(data.stream_network.srt_bitrate_kbps)} kbps`;
-        $("rttValue").textContent = `${data.stream_network.srt_rtt_ms.toFixed(1)} ms`;
-        $("packetLoss").textContent = `${data.stream_network.srt_packet_loss_percent.toFixed(2)}%`;
+        const br = Math.round(data.stream_network.srt_bitrate_kbps);
+        $("bitrateValue").textContent = `${br} kbps`;
+
+        const rtt = data.stream_network.srt_rtt_ms;
+        const rttEl = $("rttValue");
+        rttEl.textContent = `${rtt.toFixed(1)} ms`;
+        rttEl.style.color = rtt > 200 ? "var(--red)" : rtt > 100 ? "var(--yellow)" : "";
+
+        const loss = data.stream_network.srt_packet_loss_percent;
+        const lossEl = $("packetLoss");
+        lossEl.textContent = `${loss.toFixed(2)}%`;
+        lossEl.style.color = loss > 5 ? "var(--red)" : loss > 1 ? "var(--yellow)" : "";
+    }
+
+    // Encoding health
+    if (data.encoding) {
+        const fpsEl = $("encFps");
+        const fps = data.encoding.fps;
+        fpsEl.textContent = fps > 0 ? fps.toFixed(1) : "--";
+        fpsEl.style.color = fps > 0 && fps < 20 ? "var(--red)" : fps > 0 && fps < 25 ? "var(--yellow)" : "";
+
+        const speed = data.encoding.speed;
+        const speedEl = $("encSpeed");
+        speedEl.textContent = speed > 0 ? `${speed.toFixed(2)}x` : "--x";
+        speedEl.style.color = speed > 0 && speed < 0.9 ? "var(--red)" : speed > 0 && speed < 0.95 ? "var(--yellow)" : "";
+
+        const dropped = data.encoding.dropped_frames;
+        const dropEl = $("encDropped");
+        dropEl.textContent = dropped;
+        dropEl.style.color = dropped > 50 ? "var(--red)" : dropped > 10 ? "var(--yellow)" : "";
     }
 
     // Network manager status (from wifi_manager)
@@ -201,6 +228,48 @@ function escapeHtml(str) {
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Connection Check
+// ══════════════════════════════════════════════════════════════
+
+async function checkTarget() {
+    const btn = $("btnCheckTarget");
+    const result = $("targetCheckResult");
+    btn.disabled = true;
+    btn.textContent = "Checking...";
+    result.style.display = "block";
+    result.innerHTML = '<span class="dim small">Testing connection to stream target...</span>';
+
+    try {
+        const res = await fetch("/api/network/check-target", { method: "POST" });
+        const data = await res.json();
+
+        let html = "";
+        if (data.ok) {
+            html += `<div class="stat-row"><span class="stat-label">Target</span><span class="stat-value" style="color:var(--green)">${data.host}:${data.port} OK</span></div>`;
+        } else {
+            html += `<div class="stat-row"><span class="stat-label">Target</span><span class="stat-value" style="color:var(--red)">${data.host}:${data.port} FAIL</span></div>`;
+        }
+        if (data.ping_ok && data.ping_avg_ms != null) {
+            const color = data.ping_avg_ms > 100 ? "var(--yellow)" : "var(--green)";
+            html += `<div class="stat-row"><span class="stat-label">Ping</span><span class="stat-value" style="color:${color}">${data.ping_avg_ms.toFixed(1)} ms (${data.ping_min_ms.toFixed(1)}-${data.ping_max_ms.toFixed(1)})</span></div>`;
+        } else {
+            html += `<div class="stat-row"><span class="stat-label">Ping</span><span class="stat-value" style="color:var(--red)">Unreachable</span></div>`;
+        }
+        if (data.port_open) {
+            html += `<div class="stat-row"><span class="stat-label">Port ${data.port}</span><span class="stat-value" style="color:var(--green)">Open (${data.tcp_ms} ms)</span></div>`;
+        } else {
+            html += `<div class="stat-row"><span class="stat-label">Port ${data.port}</span><span class="stat-value" style="color:var(--red)">Closed</span></div>`;
+        }
+        result.innerHTML = html;
+    } catch (e) {
+        result.innerHTML = '<span class="dim small" style="color:var(--red)">Connection check failed</span>';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Check Connection";
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -343,9 +412,17 @@ async function saveSettings() {
     const proto = $("settingProtocol").value;
     const resolution = $("settingResolution").value.split("x");
 
+    const bitrate = $("settingBitrate").value;
+    // Auto-calculate rate control: maxrate = 1.2x bitrate, bufsize = 2x bitrate
+    const bitrateNum = parseInt(bitrate);
+    const maxrate = Math.round(bitrateNum * 1.2) + "k";
+    const bufsize = Math.round(bitrateNum * 2) + "k";
+
     const updates = {
         PROTOCOL: proto,
-        BITRATE: $("settingBitrate").value,
+        BITRATE: bitrate,
+        MAXRATE: maxrate,
+        BUFSIZE: bufsize,
         WIDTH: resolution[0],
         HEIGHT: resolution[1],
         VIDEO_DEVICE: $("settingCamera").value,

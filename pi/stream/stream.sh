@@ -24,12 +24,14 @@ if [ "${PROTOCOL}" = "rtmp" ]; then
     echo "Target: ${RTMP_URL}"
 elif [ "${PROTOCOL}" = "srt" ]; then
     OUTPUT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}"
+    OUTPUT_URL="${OUTPUT_URL}&oheadbw=${SRT_OHEADBW:-25}"
+    OUTPUT_URL="${OUTPUT_URL}&sndbuf=${SRT_SNDBUF:-1500000}&rcvbuf=${SRT_RCVBUF:-1500000}"
     if [ -n "${SRT_PASSPHRASE}" ]; then
         OUTPUT_URL="${OUTPUT_URL}&passphrase=${SRT_PASSPHRASE}"
     fi
     OUTPUT_FORMAT="mpegts"
     echo "=== KevinStream (SRT) ==="
-    echo "Target: ${SRT_HOST}:${SRT_PORT} (latency: ${SRT_LATENCY}us)"
+    echo "Target: ${SRT_HOST}:${SRT_PORT} (latency: ${SRT_LATENCY}us, oheadbw: ${SRT_OHEADBW:-25}%)"
 else
     echo "ERROR: Unknown protocol '${PROTOCOL}'. Use 'rtmp' or 'srt'."
     exit 1
@@ -56,6 +58,12 @@ elif [ "${ENCODER}" = "libx264" ]; then
     ENCODER_ARGS="-preset ${X264_PRESET:-ultrafast} -tune ${X264_TUNE:-zerolatency}"
 fi
 
+# Rate control args
+RATE_ARGS=""
+if [ -n "${MAXRATE:-}" ]; then
+    RATE_ARGS="-maxrate ${MAXRATE} -bufsize ${BUFSIZE:-5000k}"
+fi
+
 exec ffmpeg \
     -use_wallclock_as_timestamps 1 \
     -f v4l2 \
@@ -67,9 +75,11 @@ exec ffmpeg \
     ${AUDIO_ARGS} \
     -c:v "${ENCODER}" \
     -b:v "${BITRATE}" \
+    ${RATE_ARGS} \
     -g "${GOP_SIZE}" \
     -pix_fmt "${PIX_FMT}" \
     ${ENCODER_ARGS} \
     ${AUDIO_SYNC_ARGS} \
+    -stats_period 1 \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"

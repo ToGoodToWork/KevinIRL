@@ -282,6 +282,65 @@ def ap_disable():
     return jsonify({"ok": ok, "message": msg})
 
 
+# ── REST: connection check ───────────────────────────────────
+
+@app.route("/api/network/check-target", methods=["POST"])
+def check_target():
+    """Test connectivity to the stream target host."""
+    conf = manager.get_config()
+    protocol = conf.get("PROTOCOL", "srt")
+    if protocol == "srt":
+        host = conf.get("SRT_HOST", "")
+        port = conf.get("SRT_PORT", "9000")
+    else:
+        # Extract host from RTMP URL
+        url = conf.get("RTMP_URL", "")
+        host = url.replace("rtmp://", "").split("/")[0].split(":")[0] if url else ""
+        port = "1935"
+
+    if not host:
+        return jsonify({"ok": False, "error": "No target host configured"}), 400
+
+    import socket
+
+    results = {"host": host, "port": int(port), "protocol": protocol}
+
+    # Ping test (3 pings for avg RTT)
+    try:
+        ping_result = subprocess.run(
+            ["ping", "-c", "3", "-W", "3", host],
+            capture_output=True, text=True, timeout=12,
+        )
+        if ping_result.returncode == 0:
+            # Parse avg RTT from "min/avg/max/mdev = X/X/X/X ms"
+            for line in ping_result.stdout.splitlines():
+                if "avg" in line and "/" in line:
+                    parts = line.split("=")[-1].strip().split("/")
+                    results["ping_min_ms"] = float(parts[0])
+                    results["ping_avg_ms"] = float(parts[1])
+                    results["ping_max_ms"] = float(parts[2])
+            results["ping_ok"] = True
+        else:
+            results["ping_ok"] = False
+    except Exception:
+        results["ping_ok"] = False
+
+    # TCP port connectivity test
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        start = time.time()
+        sock.connect((host, int(port)))
+        results["tcp_ms"] = round((time.time() - start) * 1000, 1)
+        results["port_open"] = True
+        sock.close()
+    except Exception:
+        results["port_open"] = False
+
+    results["ok"] = results.get("ping_ok", False) and results.get("port_open", False)
+    return jsonify(results)
+
+
 # ── Health check ──────────────────────────────────────────────
 
 @app.route("/api/health")

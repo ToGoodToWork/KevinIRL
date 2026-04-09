@@ -56,6 +56,13 @@ class StreamManager:
             "packet_loss_percent": 0,
             "send_buffer_ms": 0,
         }
+        self._encoding_stats = {
+            "fps": 0,
+            "frame": 0,
+            "speed": 0,
+            "quality": 0,
+            "dropped_frames": 0,
+        }
         self._start_time: float | None = None
         self._stderr_thread: threading.Thread | None = None
         self._restart_backoff = 5
@@ -78,6 +85,11 @@ class StreamManager:
     def srt_stats(self) -> dict:
         with self._lock:
             return dict(self._srt_stats)
+
+    @property
+    def encoding_stats(self) -> dict:
+        with self._lock:
+            return dict(self._encoding_stats)
 
     @property
     def is_running(self) -> bool:
@@ -230,7 +242,25 @@ class StreamManager:
         if not proc or not proc.stderr:
             return
 
+        # FFmpeg progress line patterns
         bitrate_re = re.compile(r"bitrate=\s*([\d.]+)kbits/s")
+        fps_re = re.compile(r"fps=\s*([\d.]+)")
+        frame_re = re.compile(r"frame=\s*(\d+)")
+        speed_re = re.compile(r"speed=\s*([\d.]+)x")
+        quality_re = re.compile(r"q=\s*([\d.-]+)")
+        drop_re = re.compile(r"drop=\s*(\d+)")
+
+        # SRT stats patterns (libsrt periodic output)
+        srt_rtt_re = re.compile(r"msRTT[=:]\s*([\d.]+)")
+        srt_loss_re = re.compile(r"pktSndLoss[=:]\s*(\d+)")
+        srt_total_re = re.compile(r"pktSent[=:]\s*(\d+)")
+        srt_buf_re = re.compile(r"msSndBuf[=:]\s*([\d.]+)")
+        # Alternative SRT stats format
+        srt_rtt_alt = re.compile(r"rtt[=:]\s*([\d.]+)\s*ms", re.IGNORECASE)
+        srt_loss_pct_re = re.compile(r"loss[=:]?\s*([\d.]+)\s*%", re.IGNORECASE)
+
+        total_srt_sent = 0
+        total_srt_lost = 0
 
         for line_bytes in proc.stderr:
             try:
@@ -241,22 +271,67 @@ class StreamManager:
             if not line:
                 continue
 
-            # Parse FFmpeg progress lines
-            match = bitrate_re.search(line)
-            if match:
+            # Parse FFmpeg progress lines (frame= fps= q= size= time= bitrate= speed=)
+            is_progress = "frame=" in line and "bitrate=" in line
+            if is_progress:
                 with self._lock:
-                    self._srt_stats["bitrate_kbps"] = float(match.group(1))
+                    m = bitrate_re.search(line)
+                    if m:
+                        self._srt_stats["bitrate_kbps"] = float(m.group(1))
+                    m = fps_re.search(line)
+                    if m:
+                        self._encoding_stats["fps"] = float(m.group(1))
+                    m = frame_re.search(line)
+                    if m:
+                        self._encoding_stats["frame"] = int(m.group(1))
+                    m = speed_re.search(line)
+                    if m:
+                        self._encoding_stats["speed"] = float(m.group(1))
+                    m = quality_re.search(line)
+                    if m:
+                        self._encoding_stats["quality"] = float(m.group(1))
+                    m = drop_re.search(line)
+                    if m:
+                        self._encoding_stats["dropped_frames"] = int(m.group(1))
+                # Don't spam logs with progress lines
+                continue
+
+            # Parse SRT stats (libsrt outputs these periodically)
+            is_srt = "srt" in line.lower() or "msRTT" in line or "pktSnd" in line
+            if is_srt:
+                with self._lock:
+                    m = srt_rtt_re.search(line) or srt_rtt_alt.search(line)
+                    if m:
+                        self._srt_stats["rtt_ms"] = float(m.group(1))
+                    m = srt_buf_re.search(line)
+                    if m:
+                        self._srt_stats["send_buffer_ms"] = float(m.group(1))
+                    m = srt_loss_pct_re.search(line)
+                    if m:
+                        self._srt_stats["packet_loss_percent"] = float(m.group(1))
+                    else:
+                        # Calculate loss % from packet counts
+                        m_lost = srt_loss_re.search(line)
+                        m_sent = srt_total_re.search(line)
+                        if m_lost:
+                            total_srt_lost = int(m_lost.group(1))
+                        if m_sent:
+                            total_srt_sent = int(m_sent.group(1))
+                        if total_srt_sent > 0:
+                            self._srt_stats["packet_loss_percent"] = round(
+                                (total_srt_lost / total_srt_sent) * 100, 2
+                            )
 
             # Determine log level
             lower = line.lower()
             if "error" in lower or "fatal" in lower:
                 level = "error"
-            elif "warning" in lower:
+            elif "warning" in lower or "drop" in lower:
                 level = "warn"
             else:
                 level = "info"
 
-            # Add all FFmpeg output to log buffer
+            # Add non-progress output to log buffer
             self._add_log(line, level)
 
             if level in ("error", "warn"):
