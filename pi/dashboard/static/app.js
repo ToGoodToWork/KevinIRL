@@ -363,20 +363,18 @@ async function detectDevices() {
 
         // Populate cameras
         const camSelect = $("settingCamera");
-        camSelect.innerHTML = "";
-        if (devices.cameras.length === 0) {
-            camSelect.innerHTML = '<option value="/dev/video0">No cameras found</option>';
-        } else {
-            devices.cameras.forEach((cam) => {
-                const opt = document.createElement("option");
-                opt.value = cam.device;
-                opt.textContent = `${cam.name} (${cam.device})`;
-                if (cam.resolutions && cam.resolutions.length > 0) {
-                    opt.dataset.resolutions = JSON.stringify(cam.resolutions);
-                }
-                camSelect.appendChild(opt);
-            });
-        }
+        camSelect.innerHTML = '<option value="none">Disabled</option>';
+        devices.cameras.forEach((cam) => {
+            const opt = document.createElement("option");
+            opt.value = cam.device;
+            // Show a clean name: strip "(platform:...)" from the device name
+            const cleanName = cam.name.replace(/\s*\(platform:[^)]+\)\s*/g, "").trim();
+            opt.textContent = `${cleanName} (${cam.device})`;
+            if (cam.resolutions && cam.resolutions.length > 0) {
+                opt.dataset.resolutions = JSON.stringify(cam.resolutions);
+            }
+            camSelect.appendChild(opt);
+        });
 
         // Select current camera from config
         if (window._loadedVideoDevice) {

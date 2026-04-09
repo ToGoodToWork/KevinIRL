@@ -143,6 +143,9 @@ def list_devices():
     devices = {"cameras": [], "microphones": []}
 
     # Cameras: parse v4l2 devices (Linux only)
+    # Skip Pi internal hardware nodes (codecs, ISP, decoders) — they're not real cameras
+    _SKIP_DEVICES = {"bcm2835-codec", "bcm2835-isp", "rpi-hevc", "rpivid"}
+
     try:
         result = subprocess.run(
             ["v4l2-ctl", "--list-devices"],
@@ -150,13 +153,17 @@ def list_devices():
         )
         if result.returncode == 0:
             current_name = ""
+            skip_group = False
             for line in result.stdout.splitlines():
                 line = line.rstrip()
                 if not line:
                     continue
                 if not line.startswith("\t") and not line.startswith(" "):
                     current_name = line.rstrip(":")
-                elif "/dev/video" in line:
+                    # Check if this device group is an internal Pi node
+                    name_lower = current_name.lower()
+                    skip_group = any(s in name_lower for s in _SKIP_DEVICES)
+                elif "/dev/video" in line and not skip_group:
                     dev = line.strip()
                     try:
                         fmt_result = subprocess.run(
