@@ -67,14 +67,16 @@ elif [ "${ENCODER}" = "libx264" ]; then
 fi
 
 exec ffmpeg \
+    -threads 4 \
     -use_wallclock_as_timestamps 1 \
     -f v4l2 \
-    -thread_queue_size 1024 \
+    -thread_queue_size 2048 \
     -input_format "${VIDEO_INPUT_FORMAT}" \
     -video_size "${WIDTH}x${HEIGHT}" \
     -framerate "${FPS}" \
     -i "${VIDEO_DEVICE}" \
     ${AUDIO_ARGS} \
+    -threads 4 \
     -c:v "${ENCODER}" \
     -b:v "${BITRATE}" \
     ${RATE_ARGS} \
