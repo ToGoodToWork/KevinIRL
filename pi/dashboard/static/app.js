@@ -116,6 +116,9 @@ function updateNetworkUI(data) {
 
     // Encoding health
     if (data.encoding) {
+        if (data.encoding.encoder) {
+            $("encEncoder").textContent = data.encoding.encoder === "h264_v4l2m2m" ? "Hardware (Pi)" : "Software (x264)";
+        }
         const fpsEl = $("encFps");
         const fps = data.encoding.fps;
         const targetFps = data.encoding.target_fps || 30;
@@ -338,6 +341,7 @@ async function loadConfig() {
         if (cfg.SRT_PORT) $("settingSrtPort").value = cfg.SRT_PORT;
         if (cfg.SRT_PASSPHRASE) $("settingSrtPass").value = cfg.SRT_PASSPHRASE;
         if (cfg.SRT_LATENCY) $("settingLatency").value = cfg.SRT_LATENCY;
+        if (cfg.ENCODER) $("settingEncoder").value = cfg.ENCODER;
         if (cfg.BITRATE) $("settingBitrate").value = cfg.BITRATE;
         if (cfg.WIDTH && cfg.HEIGHT) {
             const r = `${cfg.WIDTH}x${cfg.HEIGHT}`;
@@ -451,6 +455,7 @@ async function saveSettings() {
 
     const updates = {
         PROTOCOL: proto,
+        ENCODER: $("settingEncoder").value,
         BITRATE: bitrate,
         MAXRATE: maxrate,
         BUFSIZE: bufsize,

@@ -34,6 +34,7 @@ def get_stats() -> dict:
             "target_bitrate_kbps": target_br_kbps,
         },
         "encoding": {
+            "encoder": conf.get("ENCODER", "unknown"),
             "fps": enc.get("fps", 0),
             "target_fps": int(conf.get("FPS", 30)),
             "frame": enc.get("frame", 0),

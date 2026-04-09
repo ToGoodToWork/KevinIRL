@@ -47,23 +47,23 @@ AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac 1 -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
-    # aresample=async=1000 continuously corrects A/V drift (inserts/drops samples to stay in sync)
-    # -async alone only corrects at stream start; aresample handles ongoing drift from clock skew
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1000:min_hard_comp=0.1:first_pts=0"
+    # aresample=async=1 continuously corrects A/V drift between independent USB devices
+    # Uses default min_hard_comp=0.5s to avoid audible pops from aggressive compensation
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1:first_pts=0"
 fi
 
-# Build encoder-specific args
+# Build encoder-specific args and rate control
 ENCODER_ARGS=""
+RATE_ARGS=""
 if [ "${ENCODER}" = "h264_v4l2m2m" ]; then
+    # Hardware encoder: uses its own internal rate controller, no maxrate/bufsize
     ENCODER_ARGS="-num_output_buffers ${NUM_OUTPUT_BUFFERS} -num_capture_buffers ${NUM_CAPTURE_BUFFERS}"
 elif [ "${ENCODER}" = "libx264" ]; then
+    # Software encoder: VBV rate control to cap bitrate spikes
     ENCODER_ARGS="-preset ${X264_PRESET:-ultrafast} -tune ${X264_TUNE:-zerolatency}"
-fi
-
-# Rate control args
-RATE_ARGS=""
-if [ -n "${MAXRATE:-}" ]; then
-    RATE_ARGS="-maxrate ${MAXRATE} -bufsize ${BUFSIZE:-5000k}"
+    if [ -n "${MAXRATE:-}" ]; then
+        RATE_ARGS="-maxrate ${MAXRATE} -bufsize ${BUFSIZE:-5000k}"
+    fi
 fi
 
 exec ffmpeg \

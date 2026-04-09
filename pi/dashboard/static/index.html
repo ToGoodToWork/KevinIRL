@@ -117,6 +117,10 @@
             <!-- Encoding Health -->
             <h2>Encoding</h2>
             <div class="stat-row">
+                <span class="stat-label">Encoder</span>
+                <span class="stat-value" id="encEncoder">--</span>
+            </div>
+            <div class="stat-row">
                 <span class="stat-label">FPS</span>
                 <span class="stat-value" id="encFps">--</span>
             </div>
@@ -198,6 +202,13 @@
 
             <div class="divider"></div>
             <h2>Encoding</h2>
+            <div class="setting-row">
+                <label>Encoder</label>
+                <select id="settingEncoder">
+                    <option value="h264_v4l2m2m">Hardware (Pi)</option>
+                    <option value="libx264">Software (x264)</option>
+                </select>
+            </div>
             <div class="setting-row">
                 <label>Bitrate</label>
                 <select id="settingBitrate">

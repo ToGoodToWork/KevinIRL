@@ -34,11 +34,9 @@ while true; do
     ffmpeg \
         -hide_banner \
         -loglevel warning \
+        -stats \
         -i "srt://0.0.0.0:${SRT_PORT}?mode=listener&latency=800000" \
-        -c:v copy \
-        -c:a aac -ac 2 -ar 44100 -b:a 96k \
-        -af "aresample=async=1000:first_pts=0" \
-        -max_interleave_delta 500000 \
+        -c copy \
         -fflags +genpts+discardcorrupt \
         -flags +low_delay \
         -f mpegts \
