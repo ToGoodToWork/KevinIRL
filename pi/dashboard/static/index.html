@@ -186,7 +186,7 @@
                     <option value="1920x1080">1080p</option>
                 </select>
             </div>
-            <button class="btn btn-accent" style="margin-top: 12px;" onclick="saveSettings()">Apply &amp; Restart</button>
+            <button class="btn btn-lg btn-accent" style="margin-top: 12px; width: 100%;" onclick="saveSettings()">Apply &amp; Restart</button>
         </div>
 
         <!-- OBS Control -->
@@ -195,18 +195,20 @@
             <div class="obs-connect">
                 <input type="text" id="obsHost" placeholder="OBS IP (e.g. 100.x.y.z)">
                 <input type="password" id="obsPassword" placeholder="Password">
-                <button class="btn btn-accent btn-sm" id="btnObsConnect" onclick="obsConnect()">Connect</button>
+                <button class="btn btn-accent" id="btnObsConnect" onclick="obsConnect()">Connect</button>
             </div>
             <div id="obsStatus" class="ws-status disconnected">Not connected</div>
 
             <div id="obsControls" style="display: none; margin-top: 16px;">
                 <h2>Streaming</h2>
                 <div id="obsStreamInfo" class="obs-info"></div>
-                <div class="btn-group" style="margin-bottom: 16px;">
-                    <button class="btn btn-start btn-sm" onclick="obsAction('StartStream')">Go Live</button>
-                    <button class="btn btn-stop btn-sm" onclick="obsAction('StopStream')">End Stream</button>
-                    <button class="btn btn-start btn-sm" onclick="obsAction('StartRecord')">Record</button>
-                    <button class="btn btn-stop btn-sm" onclick="obsAction('StopRecord')">Stop Rec</button>
+                <div class="btn-group-large" style="margin-bottom: 16px;">
+                    <button class="btn btn-lg btn-start" onclick="obsAction('StartStream')">Go Live</button>
+                    <button class="btn btn-lg btn-stop" onclick="obsAction('StopStream')">End Stream</button>
+                </div>
+                <div class="btn-group-large" style="margin-bottom: 16px;">
+                    <button class="btn btn-lg btn-start" onclick="obsAction('StartRecord')">Record</button>
+                    <button class="btn btn-lg btn-stop" onclick="obsAction('StopRecord')">Stop Rec</button>
                 </div>
 
                 <h2>Scenes</h2>

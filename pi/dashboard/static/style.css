@@ -371,9 +371,9 @@ footer {
     header { padding: 12px 16px; }
     .card { padding: 16px; }
     .btn { padding: 12px 16px; font-size: 15px; }
-    .btn-lg { padding: 18px 20px; font-size: 20px; }
+    .btn-lg { padding: 16px 20px; font-size: 18px; }
     .btn-group-large { gap: 8px; }
-    .btn-group-large .btn { min-height: 60px; }
+    .btn-group-large .btn { min-height: 56px; }
     .btn-sm { padding: 8px 14px; font-size: 13px; }
     .setting-row { flex-direction: column; align-items: stretch; gap: 4px; }
     .setting-row label { min-width: unset; }
