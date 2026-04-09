@@ -303,8 +303,9 @@ class StreamManager:
         total_srt_lost = 0
 
         buf = b""
+        raw = proc.stderr.raw  # unbuffered: returns data as soon as available
         while True:
-            chunk = proc.stderr.read(1024)
+            chunk = raw.read(4096)
             if not chunk:
                 break
             buf += chunk
