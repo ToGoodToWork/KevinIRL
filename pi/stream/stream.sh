@@ -48,8 +48,8 @@ AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac 1 -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
     # aresample=async=1 continuously corrects A/V drift between independent USB devices
-    # Uses default min_hard_comp=0.5s to avoid audible pops from aggressive compensation
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1:first_pts=0"
+    # No first_pts=0: let audio keep wallclock timestamps to stay in sync with video
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
 fi
 
 # Build encoder-specific args and rate control
