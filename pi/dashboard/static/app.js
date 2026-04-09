@@ -454,25 +454,30 @@ function updateFpsForResolution() {
     const resSelect = $("settingResolution");
     const fpsSelect = $("settingFps");
     const selected = camSelect.options[camSelect.selectedIndex];
-    if (!selected || !selected.dataset.fpsByResolution) return;
-
-    const fpsByRes = JSON.parse(selected.dataset.fpsByResolution);
-    const currentRes = resSelect.value;
     const currentFps = fpsSelect.value;
 
-    const fpsValues = fpsByRes[currentRes];
-    if (!fpsValues || fpsValues.length === 0) return;
+    // Standard FPS options always available
+    const standardFps = [60, 30, 25, 20, 15];
+    // Get detected FPS for this resolution
+    let detectedFps = [];
+    if (selected && selected.dataset.fpsByResolution) {
+        const fpsByRes = JSON.parse(selected.dataset.fpsByResolution);
+        detectedFps = (fpsByRes[resSelect.value] || []).map(f => Math.round(f));
+    }
+
+    // Merge: all standard + any detected that aren't standard
+    const allFps = [...new Set([...standardFps, ...detectedFps])].sort((a, b) => b - a);
 
     fpsSelect.innerHTML = "";
-    fpsValues.forEach((fps) => {
-        const val = Math.round(fps);
+    allFps.forEach((fps) => {
         const opt = document.createElement("option");
-        opt.value = String(val);
-        opt.textContent = `${val} fps`;
+        opt.value = String(fps);
+        const supported = detectedFps.includes(fps);
+        opt.textContent = supported ? `${fps} fps` : `${fps} fps (manual)`;
         fpsSelect.appendChild(opt);
     });
 
-    // Re-select previous FPS if available, otherwise pick first
+    // Re-select previous FPS if available
     if ([...fpsSelect.options].find(o => o.value === currentFps)) {
         fpsSelect.value = currentFps;
     }
