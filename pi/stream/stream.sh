@@ -47,7 +47,9 @@ AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
     AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac 1 -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -async 1"
+    # aresample=async=1000 continuously corrects A/V drift (inserts/drops samples to stay in sync)
+    # -async alone only corrects at stream start; aresample handles ongoing drift from clock skew
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1000:min_hard_comp=0.1:first_pts=0"
 fi
 
 # Build encoder-specific args
@@ -80,6 +82,7 @@ exec ffmpeg \
     -pix_fmt "${PIX_FMT}" \
     ${ENCODER_ARGS} \
     ${AUDIO_SYNC_ARGS} \
+    -max_muxing_queue_size 1024 \
     -stats_period 1 \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"

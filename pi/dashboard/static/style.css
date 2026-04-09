@@ -365,6 +365,32 @@ footer {
     padding: 16px;
 }
 
+/* ── Alert Banner ── */
+.alert-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.alert-banner.warning {
+    background: rgba(234, 179, 8, 0.1);
+    border-color: var(--yellow);
+    color: var(--yellow);
+}
+
+.alert-banner.critical {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: var(--red);
+    color: var(--red);
+}
+
+.alert-icon { font-size: 18px; }
+.alert-text { flex: 1; }
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
     .grid { grid-template-columns: 1fr; padding: 8px; gap: 10px; }

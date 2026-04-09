@@ -130,6 +130,31 @@ function updateNetworkUI(data) {
         dropEl.style.color = dropped > 50 ? "var(--red)" : dropped > 10 ? "var(--yellow)" : "";
     }
 
+    // Drift / delay tracking
+    if (data.drift) {
+        const drift = data.drift.drift_seconds;
+        const driftEl = $("encDrift");
+        driftEl.textContent = `${drift.toFixed(1)}s`;
+        driftEl.style.color = drift > 10 ? "var(--red)" : drift > 5 ? "var(--yellow)" : "";
+
+        // Alert banner
+        const banner = $("alertBanner");
+        const health = data.drift.health;
+        if (health === "critical" && data.stream && data.stream.status === "live") {
+            banner.style.display = "flex";
+            banner.className = "card card-wide alert-banner critical";
+            $("alertIcon").textContent = "\u26A0";
+            $("alertText").textContent = `Stream falling behind! Drift: ${drift.toFixed(1)}s \u2014 auto-restart at 15s`;
+        } else if (health === "warning" && data.stream && data.stream.status === "live") {
+            banner.style.display = "flex";
+            banner.className = "card card-wide alert-banner warning";
+            $("alertIcon").textContent = "\u26A0";
+            $("alertText").textContent = `Stream delay building: ${drift.toFixed(1)}s \u2014 encoding may be too slow for this bitrate`;
+        } else {
+            banner.style.display = "none";
+        }
+    }
+
     // Network manager status (from wifi_manager)
     if (data.network) {
         updateNetManagerUI(data.network);

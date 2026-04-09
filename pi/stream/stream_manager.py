@@ -63,11 +63,20 @@ class StreamManager:
             "quality": 0,
             "dropped_frames": 0,
         }
+        self._drift_stats = {
+            "drift_seconds": 0.0,       # wall clock - stream time (positive = falling behind)
+            "stream_time_seconds": 0.0,  # last parsed time= from FFmpeg
+            "health": "ok",              # ok, warning, critical
+        }
+        # Rolling window of speed values (last 30 samples) for sustained slow detection
+        self._speed_history = collections.deque(maxlen=30)
         self._start_time: float | None = None
         self._stderr_thread: threading.Thread | None = None
         self._restart_backoff = 5
         self._max_backoff = 60
         self._should_run = False
+        # Auto-restart when drift exceeds this (seconds). 0 = disabled.
+        self.max_drift_restart = 15
 
         # Log ring buffer
         self._log_buffer = collections.deque(maxlen=MAX_LOG_LINES)
@@ -90,6 +99,11 @@ class StreamManager:
     def encoding_stats(self) -> dict:
         with self._lock:
             return dict(self._encoding_stats)
+
+    @property
+    def drift_stats(self) -> dict:
+        with self._lock:
+            return dict(self._drift_stats)
 
     @property
     def is_running(self) -> bool:
@@ -174,6 +188,9 @@ class StreamManager:
                 self._start_time = time.time()
                 self._stats["status"] = "live"
                 self._stats["pid"] = proc.pid
+                self._drift_stats = {"drift_seconds": 0.0, "stream_time_seconds": 0.0, "health": "ok"}
+                self._speed_history.clear()
+                self._encoding_stats = {"fps": 0, "frame": 0, "speed": 0, "quality": 0, "dropped_frames": 0}
 
             self._add_log(f"FFmpeg started (PID {proc.pid})")
             log.info("FFmpeg started (PID %d)", proc.pid)
@@ -249,6 +266,7 @@ class StreamManager:
         speed_re = re.compile(r"speed=\s*([\d.]+)x")
         quality_re = re.compile(r"q=\s*([\d.-]+)")
         drop_re = re.compile(r"drop=\s*(\d+)")
+        time_re = re.compile(r"time=\s*(\d+):(\d+):(\d+)\.(\d+)")
 
         # SRT stats patterns (libsrt periodic output)
         srt_rtt_re = re.compile(r"msRTT[=:]\s*([\d.]+)")
@@ -293,7 +311,43 @@ class StreamManager:
                     m = drop_re.search(line)
                     if m:
                         self._encoding_stats["dropped_frames"] = int(m.group(1))
+
+                    # Drift detection: compare FFmpeg stream time to wall clock
+                    m = time_re.search(line)
+                    if m and self._start_time:
+                        h, mn, s, cs = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+                        stream_secs = h * 3600 + mn * 60 + s + cs / 100.0
+                        wall_secs = time.time() - self._start_time
+                        drift = wall_secs - stream_secs
+                        self._drift_stats["stream_time_seconds"] = stream_secs
+                        self._drift_stats["drift_seconds"] = round(drift, 1)
+
+                        # Track speed history for sustained slow detection
+                        spd = self._encoding_stats.get("speed", 1.0)
+                        self._speed_history.append(spd)
+
+                        # Determine health based on drift and speed trend
+                        avg_speed = sum(self._speed_history) / len(self._speed_history) if self._speed_history else 1.0
+                        if drift > 10 or avg_speed < 0.85:
+                            self._drift_stats["health"] = "critical"
+                        elif drift > 5 or avg_speed < 0.93:
+                            self._drift_stats["health"] = "warning"
+                        else:
+                            self._drift_stats["health"] = "ok"
+
                 # Don't spam logs with progress lines
+                # But auto-restart if drift is critically high
+                with self._lock:
+                    drift_val = self._drift_stats["drift_seconds"]
+                if self.max_drift_restart > 0 and drift_val > self.max_drift_restart:
+                    self._add_log(
+                        f"Drift too high ({drift_val:.1f}s > {self.max_drift_restart}s), auto-restarting stream...",
+                        "warn",
+                    )
+                    log.warning("Auto-restarting stream due to drift: %.1fs", drift_val)
+                    threading.Thread(target=self.restart, daemon=True).start()
+                    return  # Stop reading stderr, restart will spawn new reader
+
                 continue
 
             # Parse SRT stats (libsrt outputs these periodically)

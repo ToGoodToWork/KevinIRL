@@ -27,6 +27,12 @@
             </div>
         </div>
 
+        <!-- Stream Health Alert (hidden when ok) -->
+        <div class="card card-wide alert-banner" id="alertBanner" style="display: none;">
+            <span class="alert-icon" id="alertIcon"></span>
+            <span class="alert-text" id="alertText"></span>
+        </div>
+
         <!-- System Stats -->
         <div class="card">
             <h2>System</h2>
@@ -121,6 +127,10 @@
             <div class="stat-row">
                 <span class="stat-label">Dropped Frames</span>
                 <span class="stat-value" id="encDropped">0</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Delay Drift</span>
+                <span class="stat-value" id="encDrift">0.0s</span>
             </div>
         </div>
 

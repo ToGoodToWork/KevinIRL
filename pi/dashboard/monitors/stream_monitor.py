@@ -10,10 +10,11 @@ from stream_manager import manager
 
 
 def get_stats() -> dict:
-    """Get combined stream, SRT, and encoding stats."""
+    """Get combined stream, SRT, encoding, and drift stats."""
     stream = manager.stats
     srt = manager.srt_stats
     enc = manager.encoding_stats
+    drift = manager.drift_stats
     return {
         "stream": stream,
         "stream_network": {
@@ -28,5 +29,10 @@ def get_stats() -> dict:
             "speed": enc.get("speed", 0),
             "quality": enc.get("quality", 0),
             "dropped_frames": enc.get("dropped_frames", 0),
+        },
+        "drift": {
+            "drift_seconds": drift.get("drift_seconds", 0),
+            "stream_time_seconds": drift.get("stream_time_seconds", 0),
+            "health": drift.get("health", "ok"),
         },
     }
