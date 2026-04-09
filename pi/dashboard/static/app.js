@@ -99,7 +99,9 @@ function updateNetworkUI(data) {
     // Stream SRT stats
     if (data.stream_network) {
         const br = Math.round(data.stream_network.srt_bitrate_kbps);
-        $("bitrateValue").textContent = `${br} kbps`;
+        const target = data.stream_network.target_bitrate_kbps || 0;
+        $("bitrateValue").textContent = target > 0 ? `${br} / ${target} kbps` : `${br} kbps`;
+        $("bitrateValue").style.color = target > 0 && br > 0 && br < target * 0.5 ? "var(--red)" : target > 0 && br > 0 && br < target * 0.8 ? "var(--yellow)" : "";
 
         const rtt = data.stream_network.srt_rtt_ms;
         const rttEl = $("rttValue");
@@ -116,8 +118,9 @@ function updateNetworkUI(data) {
     if (data.encoding) {
         const fpsEl = $("encFps");
         const fps = data.encoding.fps;
-        fpsEl.textContent = fps > 0 ? fps.toFixed(1) : "--";
-        fpsEl.style.color = fps > 0 && fps < 20 ? "var(--red)" : fps > 0 && fps < 25 ? "var(--yellow)" : "";
+        const targetFps = data.encoding.target_fps || 30;
+        fpsEl.textContent = fps > 0 ? `${fps.toFixed(1)} / ${targetFps}` : "--";
+        fpsEl.style.color = fps > 0 && fps < targetFps * 0.65 ? "var(--red)" : fps > 0 && fps < targetFps * 0.85 ? "var(--yellow)" : "";
 
         const speed = data.encoding.speed;
         const speedEl = $("encSpeed");

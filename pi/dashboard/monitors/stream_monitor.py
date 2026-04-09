@@ -15,6 +15,15 @@ def get_stats() -> dict:
     srt = manager.srt_stats
     enc = manager.encoding_stats
     drift = manager.drift_stats
+    conf = manager.get_config()
+
+    # Parse target bitrate from config (e.g. "6000k" -> 6000)
+    target_br = conf.get("BITRATE", "0")
+    try:
+        target_br_kbps = int(target_br.replace("k", "").replace("K", ""))
+    except ValueError:
+        target_br_kbps = 0
+
     return {
         "stream": stream,
         "stream_network": {
@@ -22,9 +31,11 @@ def get_stats() -> dict:
             "srt_rtt_ms": srt.get("rtt_ms", 0),
             "srt_packet_loss_percent": srt.get("packet_loss_percent", 0),
             "srt_send_buffer_ms": srt.get("send_buffer_ms", 0),
+            "target_bitrate_kbps": target_br_kbps,
         },
         "encoding": {
             "fps": enc.get("fps", 0),
+            "target_fps": int(conf.get("FPS", 30)),
             "frame": enc.get("frame", 0),
             "speed": enc.get("speed", 0),
             "quality": enc.get("quality", 0),

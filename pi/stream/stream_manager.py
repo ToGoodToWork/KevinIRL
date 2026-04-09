@@ -183,6 +183,16 @@ class StreamManager:
     def _launch(self) -> bool:
         """Internal: launch FFmpeg subprocess."""
         try:
+            # Log the active config so we can verify settings are applied
+            conf = self.get_config()
+            config_summary = (
+                f"Config: {conf.get('WIDTH')}x{conf.get('HEIGHT')}@{conf.get('FPS')}fps "
+                f"bitrate={conf.get('BITRATE')} maxrate={conf.get('MAXRATE','N/A')} "
+                f"bufsize={conf.get('BUFSIZE','N/A')} encoder={conf.get('ENCODER')} "
+                f"device={conf.get('VIDEO_DEVICE')} protocol={conf.get('PROTOCOL')}"
+            )
+            self._add_log(config_summary)
+            log.info(config_summary)
             self._add_log("Starting FFmpeg stream...")
             log.info("Starting FFmpeg stream...")
             proc = subprocess.Popen(
@@ -322,6 +332,10 @@ class StreamManager:
 
                 # ── FFmpeg progress line ──
                 if "frame=" in line and "bitrate=" in line:
+                    # Log raw progress every 30 frames for debugging
+                    m_fr = frame_re.search(line)
+                    if m_fr and int(m_fr.group(1)) % 300 == 0:
+                        self._add_log(f"[stats] {line}")
                     with self._lock:
                         m = bitrate_re.search(line)
                         if m:
