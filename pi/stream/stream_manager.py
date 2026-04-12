@@ -137,6 +137,98 @@ class StreamManager:
         with self._lock:
             self._log_buffer.clear()
 
+    # ── Device & process utilities ──
+
+    @staticmethod
+    def _device_exists(device_path: str) -> bool:
+        """Check if a device node exists."""
+        return os.path.exists(device_path)
+
+    @staticmethod
+    def _is_process_alive(pid: int) -> bool:
+        """Check if a process is still running."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _kill_orphan_ffmpeg(device_path: str) -> int:
+        """Find and kill any ffmpeg processes holding a device open. Returns count killed."""
+        if not device_path or not os.path.exists(device_path):
+            return 0
+
+        # Get PIDs using the device via fuser
+        try:
+            result = subprocess.run(
+                ["fuser", device_path],
+                capture_output=True, text=True, timeout=5,
+            )
+            raw = (result.stdout + result.stderr).strip()
+            pids = [int(p) for p in raw.split() if p.isdigit()]
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            return 0
+
+        if not pids:
+            return 0
+
+        # Filter to only ffmpeg processes
+        ffmpeg_pids = []
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmdline = f.read().decode("utf-8", errors="replace")
+                if "ffmpeg" in cmdline:
+                    ffmpeg_pids.append(pid)
+            except (FileNotFoundError, PermissionError):
+                pass
+
+        if not ffmpeg_pids:
+            return 0
+
+        killed = 0
+        for pid in ffmpeg_pids:
+            # Phase 1: SIGTERM
+            try:
+                os.kill(pid, signal.SIGTERM)
+                log.info("Sent SIGTERM to orphan ffmpeg PID %d", pid)
+            except ProcessLookupError:
+                killed += 1
+                continue
+            except Exception:
+                continue
+
+        if ffmpeg_pids:
+            time.sleep(3)
+
+        for pid in ffmpeg_pids:
+            if not StreamManager._is_process_alive(pid):
+                killed += 1
+                continue
+            # Phase 2: SIGKILL
+            try:
+                os.kill(pid, signal.SIGKILL)
+                log.warning("Sent SIGKILL to orphan ffmpeg PID %d", pid)
+            except ProcessLookupError:
+                pass
+            killed += 1
+
+        if killed:
+            time.sleep(1)  # Let kernel release device
+        return killed
+
+    def kill_orphans(self) -> dict:
+        """Public: kill any orphaned ffmpeg processes on the configured video device."""
+        conf = self.get_config()
+        device = conf.get("VIDEO_DEVICE", "")
+        if not device:
+            return {"killed": 0, "device": ""}
+        killed = self._kill_orphan_ffmpeg(device)
+        if killed:
+            self._add_log(f"Killed {killed} orphan ffmpeg process(es) on {device}", "warn")
+        return {"killed": killed, "device": device}
+
     def get_config(self) -> dict:
         """Read current stream configuration."""
         return parse_conf(CONF_FILE)
@@ -185,13 +277,31 @@ class StreamManager:
     def _launch(self) -> bool:
         """Internal: launch FFmpeg subprocess."""
         try:
-            # Log the active config so we can verify settings are applied
             conf = self.get_config()
+            device = conf.get("VIDEO_DEVICE", "")
+
+            # Pre-launch: check device exists
+            if device and not self._device_exists(device):
+                msg = f"Video device {device} not found"
+                self._add_log(msg, "error")
+                log.error(msg)
+                with self._lock:
+                    self._stats["status"] = "error"
+                    self._stats["pid"] = None
+                return False
+
+            # Pre-launch: kill any orphan ffmpeg processes on the device
+            if device:
+                killed = self._kill_orphan_ffmpeg(device)
+                if killed:
+                    self._add_log(f"Killed {killed} orphan process(es) on {device} before launch", "warn")
+                    time.sleep(1)  # Let kernel release device
+
             config_summary = (
                 f"Config: {conf.get('WIDTH')}x{conf.get('HEIGHT')}@{conf.get('FPS')}fps "
                 f"bitrate={conf.get('BITRATE')} maxrate={conf.get('MAXRATE','N/A')} "
                 f"bufsize={conf.get('BUFSIZE','N/A')} encoder={conf.get('ENCODER')} "
-                f"device={conf.get('VIDEO_DEVICE')} protocol={conf.get('PROTOCOL')}"
+                f"device={device} protocol={conf.get('PROTOCOL')}"
             )
             self._add_log(config_summary)
             log.info(config_summary)
@@ -235,28 +345,70 @@ class StreamManager:
             return False
 
     def stop(self) -> bool:
-        """Stop the FFmpeg streaming process."""
+        """Stop the FFmpeg streaming process. Guarantees process is dead before returning."""
         self._should_run = False
         with self._lock:
             if not self._process:
                 return False
-
             proc = self._process
 
-        self._add_log(f"Stopping FFmpeg (PID {proc.pid})...")
-        log.info("Stopping FFmpeg (PID %d)...", proc.pid)
+        pid = proc.pid
+        self._add_log(f"Stopping FFmpeg (PID {pid})...")
+        log.info("Stopping FFmpeg (PID %d)...", pid)
+
+        # Phase 1: SIGTERM to process group
         try:
             if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
             else:
                 proc.terminate()
+        except ProcessLookupError:
+            pass  # already dead
+        except Exception as e:
+            log.warning("SIGTERM failed: %s", e)
+
+        # Phase 2: Wait for graceful exit
+        try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            log.warning("FFmpeg did not stop, killing...")
-            proc.kill()
-            proc.wait(timeout=5)
+            # Phase 3: SIGKILL
+            log.warning("FFmpeg PID %d did not stop after SIGTERM, sending SIGKILL...", pid)
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                else:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            # Phase 4: Final wait
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log.error("FFmpeg PID %d refused to die after SIGKILL", pid)
+
+        # Phase 5: Verify death
+        if self._is_process_alive(pid):
+            log.error("FFmpeg PID %d still alive after stop()", pid)
+            self._add_log(f"WARNING: FFmpeg PID {pid} could not be killed", "error")
+        else:
+            self._add_log("FFmpeg stopped")
+            log.info("FFmpeg stopped")
+
+        # Phase 6: Clean up any orphans holding the device
+        try:
+            conf = self.get_config()
+            device = conf.get("VIDEO_DEVICE", "")
+            if device:
+                killed = self._kill_orphan_ffmpeg(device)
+                if killed:
+                    self._add_log(f"Cleaned up {killed} orphan process(es) on {device}", "warn")
         except Exception as e:
-            log.error("Error stopping FFmpeg: %s", e)
+            log.warning("Orphan cleanup failed: %s", e)
 
         with self._lock:
             self._process = None
@@ -264,8 +416,6 @@ class StreamManager:
             self._stats["pid"] = None
             self._start_time = None
 
-        self._add_log("FFmpeg stopped")
-        log.info("FFmpeg stopped")
         return True
 
     def restart(self) -> bool:
@@ -440,7 +590,37 @@ class StreamManager:
             log.info("FFmpeg exited (code %d), not restarting (manual stop)", exit_code)
             return
 
-        self._add_log(f"FFmpeg crashed (code {exit_code}), restarting in {self._restart_backoff}s...", "error")
+        # Check if device still exists before attempting restart
+        conf = self.get_config()
+        device = conf.get("VIDEO_DEVICE", "")
+
+        if device and not self._device_exists(device):
+            self._add_log(
+                f"FFmpeg crashed (code {exit_code}), device {device} is gone. "
+                "Waiting for device to reappear...", "error"
+            )
+            log.warning("Device %s not found after crash, waiting for reappearance", device)
+            waited = 0
+            while self._should_run and waited < 300:  # Up to 5 minutes
+                time.sleep(5)
+                waited += 5
+                if self._device_exists(device):
+                    self._add_log(f"Device {device} reappeared after {waited}s")
+                    log.info("Device %s reappeared after %ds", device, waited)
+                    time.sleep(2)  # Let device fully initialize
+                    break
+            else:
+                if self._should_run:
+                    self._add_log(f"Device {device} did not reappear after 5 min, giving up", "error")
+                    log.error("Device %s did not reappear, giving up auto-restart", device)
+                    with self._lock:
+                        self._stats["status"] = "error"
+                    return
+
+        self._add_log(
+            f"FFmpeg crashed (code {exit_code}), restarting in {self._restart_backoff}s...",
+            "error"
+        )
         log.warning("FFmpeg crashed (code %d), restarting in %ds...", exit_code, self._restart_backoff)
         time.sleep(self._restart_backoff)
 

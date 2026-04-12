@@ -102,6 +102,13 @@ def stream_restart():
     return jsonify({"ok": ok})
 
 
+@app.route("/api/stream/kill-orphans", methods=["POST"])
+def stream_kill_orphans():
+    """Kill any orphaned ffmpeg processes holding the video device."""
+    result = manager.kill_orphans()
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/stream/config", methods=["GET"])
 def stream_config_get():
     return jsonify(manager.get_config())
@@ -147,35 +154,44 @@ def clear_logs():
 def list_devices():
     """List connected cameras and microphones."""
     import re as _re
-    devices = {"cameras": [], "microphones": []}
+    devices = {"cameras": [], "microphones": [], "errors": []}
 
     # Cameras: parse v4l2 devices (Linux only)
     # Skip Pi internal hardware nodes (codecs, ISP, decoders) — they're not real cameras
     _SKIP_DEVICES = {"bcm2835-codec", "bcm2835-isp", "rpi-hevc", "rpivid"}
 
     try:
-        result = subprocess.run(
-            ["v4l2-ctl", "--list-devices"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
+        # Retry once if v4l2-ctl fails (USB device may still be initializing)
+        result = None
+        for attempt in range(2):
+            result = subprocess.run(
+                ["v4l2-ctl", "--list-devices"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                break
+            if attempt == 0:
+                time.sleep(1)
+
+        if result and result.returncode == 0:
             current_name = ""
             skip_group = False
+            group_found = False  # Only take first /dev/video per device group
             for line in result.stdout.splitlines():
                 line = line.rstrip()
                 if not line:
                     continue
                 if not line.startswith("\t") and not line.startswith(" "):
                     current_name = line.rstrip(":")
-                    # Check if this device group is an internal Pi node
                     name_lower = current_name.lower()
                     skip_group = any(s in name_lower for s in _SKIP_DEVICES)
-                elif "/dev/video" in line and not skip_group:
+                    group_found = False  # Reset for new device group
+                elif "/dev/video" in line and not skip_group and not group_found:
                     dev = line.strip()
                     try:
                         fmt_result = subprocess.run(
                             ["v4l2-ctl", "-d", dev, "--list-formats-ext"],
-                            capture_output=True, text=True, timeout=3,
+                            capture_output=True, text=True, timeout=5,
                         )
                         output = fmt_result.stdout
                         if "Video Capture" in output or "mjpeg" in output.lower() or "yuyv" in output.lower():
@@ -207,10 +223,17 @@ def list_devices():
                                 "resolutions": resolutions,
                                 "fps_by_resolution": {r: sorted(f, reverse=True) for r, f in res_fps.items()},
                             })
+                            group_found = True  # Skip remaining /dev/video in this group
                     except Exception:
                         pass
-    except Exception:
-        pass
+        elif result:
+            devices["errors"].append(f"v4l2-ctl failed (exit {result.returncode})")
+    except subprocess.TimeoutExpired:
+        devices["errors"].append("Camera detection timed out")
+    except FileNotFoundError:
+        devices["errors"].append("v4l2-ctl not found")
+    except Exception as e:
+        devices["errors"].append(f"Camera detection error: {str(e)}")
 
     # Microphones: parse ALSA capture devices
     try:
