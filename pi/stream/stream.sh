@@ -46,9 +46,9 @@ echo "==================="
 AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
-    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
-    # aresample=async=1 continuously corrects A/V drift between independent USB devices
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 44100 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
+    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 4096 -i ${AUDIO_DEVICE}"
+    # Keep native 48000Hz to avoid resampling overhead, async=1 corrects A/V drift
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 48000 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
 fi
 
 # Build encoder-specific args and rate control
