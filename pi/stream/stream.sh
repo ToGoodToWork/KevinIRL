@@ -46,7 +46,7 @@ echo "==================="
 AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
-    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 4096 -i ${AUDIO_DEVICE}"
+    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
     # Keep native 48000Hz to avoid resampling overhead, async=1 corrects A/V drift
     AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 48000 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
 fi
@@ -66,16 +66,14 @@ elif [ "${ENCODER}" = "libx264" ]; then
 fi
 
 exec ffmpeg \
-    -threads 4 \
     -use_wallclock_as_timestamps 1 \
     -f v4l2 \
-    -thread_queue_size 2048 \
+    -thread_queue_size 1024 \
     -input_format "${VIDEO_INPUT_FORMAT}" \
     -video_size "${WIDTH}x${HEIGHT}" \
     -framerate "${FPS}" \
     -i "${VIDEO_DEVICE}" \
     ${AUDIO_ARGS} \
-    -threads 4 \
     -c:v "${ENCODER}" \
     -b:v "${BITRATE}" \
     ${RATE_ARGS} \
