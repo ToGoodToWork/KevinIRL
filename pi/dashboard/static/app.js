@@ -358,6 +358,7 @@ async function loadConfig() {
 
         // Store current device values, then detect devices to populate dropdowns
         window._loadedVideoDevice = cfg.VIDEO_DEVICE || "/dev/video0";
+        if (cfg.AUDIO_CHANNELS) $("settingAudioChannels").value = cfg.AUDIO_CHANNELS;
         window._loadedAudioDevice = cfg.AUDIO_DEVICE || "none";
         detectDevices();
     } catch (e) {
@@ -512,6 +513,7 @@ async function saveSettings() {
         GOP_SIZE: String(parseInt(fps)),
         VIDEO_DEVICE: $("settingCamera").value,
         AUDIO_DEVICE: $("settingAudio").value,
+        AUDIO_CHANNELS: $("settingAudioChannels").value,
     };
 
     if (proto === "rtmp") {
