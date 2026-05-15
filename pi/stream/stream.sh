@@ -37,6 +37,23 @@ else
     exit 1
 fi
 
+# Safety defaults — refuse to pass empty values to ffmpeg (which would crash with
+# "Error setting option b to value ." or similar). update_config() already validates,
+# so this is a belt-and-suspenders fallback for hand-edited or migrated configs.
+: "${BITRATE:=2500k}"
+: "${WIDTH:=1280}"
+: "${HEIGHT:=720}"
+: "${FPS:=30}"
+: "${GOP_SIZE:=${FPS}}"
+: "${ENCODER:=libx264}"
+: "${PIX_FMT:=yuv420p}"
+: "${VIDEO_INPUT_FORMAT:=mjpeg}"
+: "${VIDEO_DEVICE:=/dev/video0}"
+: "${AUDIO_BITRATE:=96k}"
+: "${AUDIO_CHANNELS:=2}"
+: "${NUM_OUTPUT_BUFFERS:=16}"
+: "${NUM_CAPTURE_BUFFERS:=8}"
+
 echo "Video: ${WIDTH}x${HEIGHT}@${FPS}fps ${BITRATE}"
 echo "Encoder: ${ENCODER}"
 echo "Audio: ${AUDIO_DEVICE}"

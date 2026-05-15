@@ -211,17 +211,21 @@ else
     warn "SRT_HOST not set - edit ${CONF_FILE} later"
 fi
 
-# SRT Passphrase
-read -rp "SRT passphrase (min 10 chars) [changeme]: " INPUT_PASS
-if [ -n "$INPUT_PASS" ]; then
-    if [ ${#INPUT_PASS} -lt 10 ]; then
-        warn "Passphrase should be at least 10 characters for SRT. Using it anyway."
+# SRT Passphrase — required, must match what the receiver uses.
+# Tailscale already encrypts the link, but a passphrase also keeps random
+# scanners on your tailnet from being able to peek at the stream.
+INPUT_PASS=""
+while [ -z "$INPUT_PASS" ] || [ ${#INPUT_PASS} -lt 10 ]; do
+    read -rp "SRT passphrase (REQUIRED, min 10 chars): " INPUT_PASS
+    if [ -z "$INPUT_PASS" ]; then
+        warn "Empty passphrase not allowed."
+    elif [ ${#INPUT_PASS} -lt 10 ]; then
+        warn "Passphrase too short (${#INPUT_PASS} chars) — minimum is 10."
+        INPUT_PASS=""
     fi
-    sed -i "s|^SRT_PASSPHRASE=.*|SRT_PASSPHRASE=${INPUT_PASS}|" "$CONF_FILE"
-    ok "SRT passphrase set"
-else
-    warn "Using default passphrase 'changeme' - change this before going live!"
-fi
+done
+sed -i "s|^SRT_PASSPHRASE=.*|SRT_PASSPHRASE=${INPUT_PASS}|" "$CONF_FILE"
+ok "SRT passphrase set (use this same value on the receiver)"
 
 # Bitrate
 echo ""
@@ -288,9 +292,14 @@ echo -e "  Pi Tailscale IP:       ${CYAN}${TS_IP}${NC}"
 echo ""
 echo -e "${YELLOW}Next steps on your HOME PC:${NC}"
 echo "  1. Install Tailscale: https://tailscale.com/download"
-echo "  2. Open OBS Studio"
-echo "  3. Add Media Source with input:"
-echo -e "     ${CYAN}srt://:9000?mode=listener&passphrase=YOUR_PASSPHRASE${NC}"
+echo "  2. Run the receiver script (handles auto-reconnect + live stats):"
+echo -e "     ${CYAN}./receiver/start-receiver.sh${NC}"
+echo -e "     When it prompts, enter the passphrase: ${CYAN}${INPUT_PASS}${NC}"
+echo "  3. Add an OBS Media Source pointing at one of:"
+echo -e "     A) Direct SRT (skip the receiver script):"
+echo -e "        ${CYAN}srt://:9000?mode=listener&passphrase=${INPUT_PASS}${NC}"
+echo -e "     B) Relay via receiver (recommended, auto-reconnects):"
+echo -e "        ${CYAN}udp://127.0.0.1:9001${NC} (Input Format: mpegts)"
 echo "  4. Enable WebSocket server in OBS (Tools > WebSocket Server Settings)"
 echo "  5. Open the dashboard and click 'Start' to begin streaming"
 echo ""

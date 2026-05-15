@@ -25,6 +25,7 @@
                 <button class="btn btn-lg btn-stop" id="btnStop" onclick="streamControl('stop')" disabled>Stop</button>
                 <button class="btn btn-lg btn-restart" id="btnRestart" onclick="streamControl('restart')" disabled>Restart</button>
             </div>
+            <button class="btn btn-sm btn-force-stop" id="btnForceStop" onclick="forceStop()" style="margin-top: 10px;">Force Kill &amp; Reset</button>
         </div>
 
         <!-- Stream Health Alert (hidden when ok) -->
@@ -195,7 +196,7 @@
             </div>
             <div class="setting-row">
                 <label>Microphone</label>
-                <select id="settingAudio">
+                <select id="settingAudio" onchange="onAudioDeviceChange()">
                     <option value="none">Disabled</option>
                 </select>
             </div>
@@ -211,11 +212,12 @@
             <h2>Encoding</h2>
             <div class="setting-row">
                 <label>Encoder</label>
-                <select id="settingEncoder">
+                <select id="settingEncoder" onchange="onEncoderChange()">
                     <option value="h264_v4l2m2m">Hardware (Pi)</option>
                     <option value="libx264">Software (x264)</option>
                 </select>
             </div>
+            <div id="encoderNote" class="dim small" style="margin: -4px 0 8px 0;"></div>
             <div class="setting-row">
                 <label>Bitrate</label>
                 <select id="settingBitrate">
@@ -286,6 +288,13 @@
                 <h2>Logs</h2>
                 <button class="btn btn-sm btn-accent" onclick="clearLogs()">Clear</button>
             </div>
+            <div class="log-filters" id="logFilters">
+                <button class="log-filter-chip active" data-filter="all" onclick="setLogFilter('all')">All</button>
+                <button class="log-filter-chip" data-filter="info" onclick="setLogFilter('info')">Info</button>
+                <button class="log-filter-chip" data-filter="warn" onclick="setLogFilter('warn')">Warn</button>
+                <button class="log-filter-chip" data-filter="error" onclick="setLogFilter('error')">Error</button>
+                <button class="log-filter-chip" data-filter="stats" onclick="setLogFilter('stats')">Stream stats</button>
+            </div>
             <div class="log-terminal" id="logTerminal">
                 <div class="dim small">Waiting for logs...</div>
             </div>
@@ -295,6 +304,9 @@
     <footer>
         <span class="ws-status" id="wsStatus">Connecting...</span>
     </footer>
+
+    <!-- Toast container for device events, etc. -->
+    <div id="toastContainer" class="toast-container"></div>
 
     <!-- WiFi Connect Modal -->
     <div class="modal-overlay" id="wifiModal" style="display: none;">

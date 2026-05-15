@@ -83,12 +83,33 @@ class StreamManager:
         self._log_buffer = collections.deque(maxlen=MAX_LOG_LINES)
         self._log_counter = 0  # monotonic counter for tracking new logs
 
+        # Last error captured from an immediate-crash launch — surfaced via API.
+        self._last_error = ""
+        # Consecutive crashes within ~3s of launch. Reset on success, capped to
+        # stop tight crash-restart loops on bad config.
+        self._immediate_crash_count = 0
+        self._max_immediate_crashes = 3
+
     @property
     def stats(self) -> dict:
         with self._lock:
             s = dict(self._stats)
+            # Compute live status from the actual process state so the UI
+            # reflects ffmpeg crashing within ~1s (before _watchdog notices).
+            # If _stats says "error" or "stopped" already, don't overwrite — those
+            # are intentional terminal states set by stop()/_launch() failure.
+            if self._process is not None:
+                if self._process.poll() is None:
+                    s["status"] = "live"
+                    s["pid"] = self._process.pid
+                else:
+                    # Process is gone but stats hasn't caught up yet.
+                    if s.get("status") not in ("error", "stopped"):
+                        s["status"] = "error"
+                    s["pid"] = None
             if self._start_time and s["status"] == "live":
                 s["uptime_seconds"] = int(time.time() - self._start_time)
+            s["last_error"] = self._last_error
             return s
 
     @property
@@ -143,6 +164,122 @@ class StreamManager:
     def _device_exists(device_path: str) -> bool:
         """Check if a device node exists."""
         return os.path.exists(device_path)
+
+    @staticmethod
+    def _audio_device_exists(plughw: str) -> bool:
+        """Check whether a plughw:CARD,DEV ALSA device is currently present."""
+        if not plughw or not plughw.startswith("plughw:"):
+            return False
+        try:
+            card = plughw.split(":", 1)[1].split(",", 1)[0]
+            int(card)  # ensure it's numeric
+        except (ValueError, IndexError):
+            return False
+        return os.path.isdir(f"/proc/asound/card{card}")
+
+    def _resolve_audio_device(self, plughw: str, friendly_name: str) -> str:
+        """Resolve a saved plughw:CARD,DEV to the current card index.
+
+        If the saved card index still exists, return plughw unchanged. Otherwise
+        scan `arecord -l` for a card whose name contains friendly_name and
+        return the new plughw:N,0. If nothing matches, return the original
+        (ffmpeg will fail with a clear error that gets logged).
+        """
+        if not plughw or plughw == "none":
+            return plughw
+        if self._audio_device_exists(plughw):
+            return plughw
+        if not friendly_name:
+            self._add_log(
+                f"Audio device {plughw} not present and no friendly name saved — "
+                "will let ffmpeg fail loudly", "warn",
+            )
+            return plughw
+
+        try:
+            result = subprocess.run(
+                ["arecord", "-l"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self._add_log(f"arecord -l failed during device resolution: {e}", "warn")
+            return plughw
+
+        if result.returncode != 0:
+            return plughw
+
+        target = friendly_name.strip().lower()
+        for line in result.stdout.splitlines():
+            m = re.match(r"card (\d+):.*\[(.+?)\].*device (\d+):", line)
+            if not m:
+                continue
+            card, card_name, device = m.groups()
+            if target in card_name.strip().lower():
+                resolved = f"plughw:{card},{device}"
+                if resolved != plughw:
+                    self._add_log(
+                        f"Resolved {friendly_name!r} to {resolved} (was {plughw})",
+                        "info",
+                    )
+                return resolved
+
+        self._add_log(
+            f"Audio device {plughw} ({friendly_name!r}) not found — ffmpeg will fail",
+            "warn",
+        )
+        return plughw
+
+    def _resolve_video_device(self, dev_path: str, friendly_name: str) -> str:
+        """Resolve a saved /dev/videoN to the current device path by name.
+
+        If the saved path exists, return unchanged. Otherwise scan
+        `v4l2-ctl --list-devices` for a group whose label contains
+        friendly_name and return the first /dev/videoN under it.
+        """
+        if not dev_path or dev_path == "none":
+            return dev_path
+        if self._device_exists(dev_path):
+            return dev_path
+        if not friendly_name:
+            self._add_log(
+                f"Video device {dev_path} not present and no friendly name saved — "
+                "will let ffmpeg fail loudly", "warn",
+            )
+            return dev_path
+
+        try:
+            result = subprocess.run(
+                ["v4l2-ctl", "--list-devices"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self._add_log(f"v4l2-ctl --list-devices failed: {e}", "warn")
+            return dev_path
+
+        if result.returncode != 0:
+            return dev_path
+
+        target = friendly_name.strip().lower()
+        current_match = False
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            if not line.startswith("\t") and not line.startswith(" "):
+                current_match = target in line.strip().rstrip(":").lower()
+            elif current_match and "/dev/video" in line:
+                resolved = line.strip()
+                if resolved != dev_path:
+                    self._add_log(
+                        f"Resolved {friendly_name!r} to {resolved} (was {dev_path})",
+                        "info",
+                    )
+                return resolved
+
+        self._add_log(
+            f"Video device {dev_path} ({friendly_name!r}) not found — ffmpeg will fail",
+            "warn",
+        )
+        return dev_path
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
@@ -233,8 +370,40 @@ class StreamManager:
         """Read current stream configuration."""
         return parse_conf(CONF_FILE)
 
+    # Config keys that must never be empty/whitespace.
+    _REQUIRED_KEYS = ("BITRATE", "WIDTH", "HEIGHT", "FPS", "SRT_HOST", "SRT_PORT", "ENCODER")
+
+    # Keys with strict format requirements.
+    _RE_BITRATE_VALUE = re.compile(r"^\d+k?$")
+    _RE_POSITIVE_INT = re.compile(r"^\d+$")
+
+    @classmethod
+    def _validate_config_value(cls, key: str, value):
+        """Raise ValueError if value is empty or malformed for the given key."""
+        sval = "" if value is None else str(value).strip()
+        if key in cls._REQUIRED_KEYS and not sval:
+            raise ValueError(f"{key} cannot be empty")
+        if not sval:
+            return sval  # non-required key, empty is fine
+        if key == "BITRATE" and not cls._RE_BITRATE_VALUE.match(sval):
+            raise ValueError(f"BITRATE must be digits optionally followed by 'k' (got '{sval}')")
+        if key in ("WIDTH", "HEIGHT", "FPS", "SRT_PORT") and not cls._RE_POSITIVE_INT.match(sval):
+            raise ValueError(f"{key} must be a positive integer (got '{sval}')")
+        if key in ("WIDTH", "HEIGHT", "FPS", "SRT_PORT") and int(sval) <= 0:
+            raise ValueError(f"{key} must be > 0 (got '{sval}')")
+        return sval
+
     def update_config(self, updates: dict) -> dict:
-        """Update stream configuration values. Adds new keys if they don't exist."""
+        """Update stream configuration values. Adds new keys if they don't exist.
+
+        Raises ValueError if any value is empty/invalid for a required key.
+        """
+        # Validate everything before touching the file.
+        old_config = self.get_config()
+        validated = {}
+        for key, value in updates.items():
+            validated[key] = self._validate_config_value(key, value)
+
         with open(CONF_FILE) as f:
             lines = f.readlines()
 
@@ -244,23 +413,33 @@ class StreamManager:
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
-                if key in updates:
-                    new_lines.append(f"{key}={updates[key]}\n")
+                if key in validated:
+                    new_lines.append(f"{key}={validated[key]}\n")
                     updated_keys.add(key)
                     continue
             new_lines.append(line)
 
         # Append any new keys that weren't already in the file
-        missing = set(updates.keys()) - updated_keys
+        missing = set(validated.keys()) - updated_keys
         if missing:
             new_lines.append("\n")
             for key in sorted(missing):
-                new_lines.append(f"{key}={updates[key]}\n")
+                new_lines.append(f"{key}={validated[key]}\n")
 
         with open(CONF_FILE, "w") as f:
             f.writelines(new_lines)
 
-        log.info("Config updated: %s", ", ".join(f"{k}={updates[k]}" for k in updates))
+        # Log per-key, showing old → new where it actually changed.
+        changes = []
+        for k, v in validated.items():
+            old = old_config.get(k, "")
+            if old != v:
+                changes.append(f"{k}={v} (was {old or '(unset)'})")
+            else:
+                changes.append(f"{k}={v}")
+        summary = ", ".join(changes)
+        log.info("Config updated: %s", summary)
+        self._add_log(f"Config saved: {summary}")
         return self.get_config()
 
     def start(self) -> bool:
@@ -279,6 +458,27 @@ class StreamManager:
         try:
             conf = self.get_config()
             device = conf.get("VIDEO_DEVICE", "")
+            video_name = conf.get("VIDEO_DEVICE_NAME", "")
+            audio_device = conf.get("AUDIO_DEVICE", "none")
+            audio_name = conf.get("AUDIO_DEVICE_NAME", "")
+
+            # Pre-launch: resolve device paths by friendly name when the saved
+            # node no longer exists (e.g. DJI Mic re-enumerated to a new card).
+            resolved_video = self._resolve_video_device(device, video_name) if device else device
+            resolved_audio = self._resolve_audio_device(audio_device, audio_name) if audio_device and audio_device != "none" else audio_device
+
+            persisted = {}
+            if resolved_video and resolved_video != device:
+                persisted["VIDEO_DEVICE"] = resolved_video
+                device = resolved_video
+            if resolved_audio and resolved_audio != audio_device:
+                persisted["AUDIO_DEVICE"] = resolved_audio
+                audio_device = resolved_audio
+            if persisted:
+                try:
+                    self.update_config(persisted)
+                except Exception as e:
+                    self._add_log(f"Failed to persist resolved device path: {e}", "warn")
 
             # Pre-launch: check device exists
             if device and not self._device_exists(device):
@@ -314,6 +514,40 @@ class StreamManager:
                 preexec_fn=os.setsid if hasattr(os, "setsid") else None,
             )
 
+            # Sanity check: did ffmpeg die immediately? (config error, missing
+            # device, bad encoder option, etc.) Block briefly so the API caller
+            # learns of the failure synchronously instead of via the watchdog.
+            time.sleep(0.5)
+            if proc.poll() is not None:
+                exit_code = proc.returncode
+                stderr_tail = self._drain_stderr_nonblocking(proc, max_bytes=8192)
+                last_lines = [ln for ln in stderr_tail.splitlines() if ln.strip()][-3:]
+                err_text = " | ".join(last_lines) if last_lines else "(no stderr output)"
+                self._last_error = err_text
+                self._immediate_crash_count += 1
+                self._add_log(
+                    f"FFmpeg exited immediately (code {exit_code}, "
+                    f"attempt {self._immediate_crash_count}/{self._max_immediate_crashes}): "
+                    f"{err_text}",
+                    "error",
+                )
+                log.error("FFmpeg exited immediately (code %d): %s", exit_code, err_text)
+                with self._lock:
+                    self._stats["status"] = "error"
+                    self._stats["pid"] = None
+                    self._process = None
+                    self._start_time = None
+                if self._immediate_crash_count >= self._max_immediate_crashes:
+                    self._should_run = False
+                    self._add_log(
+                        f"Stream failed {self._immediate_crash_count} times in a row — "
+                        "manual restart required (fix config and click Start).",
+                        "error",
+                    )
+                return False
+            # Survived 500ms → not an instant-crash. Reset the counter.
+            self._immediate_crash_count = 0
+
             with self._lock:
                 self._process = proc
                 self._start_time = time.time()
@@ -322,6 +556,7 @@ class StreamManager:
                 self._drift_stats = {"drift_seconds": 0.0, "stream_time_seconds": 0.0, "health": "ok"}
                 self._speed_history.clear()
                 self._encoding_stats = {"fps": 0, "frame": 0, "speed": 0, "quality": 0, "dropped_frames": 0}
+            self._last_error = ""
 
             self._add_log(f"FFmpeg started (PID {proc.pid})")
             log.info("FFmpeg started (PID %d)", proc.pid)
@@ -343,6 +578,41 @@ class StreamManager:
                 self._stats["status"] = "error"
                 self._stats["pid"] = None
             return False
+
+    @staticmethod
+    def _drain_stderr_nonblocking(proc: subprocess.Popen, max_bytes: int = 8192) -> str:
+        """Read whatever stderr bytes are currently buffered, without blocking.
+
+        Safe to call once the process has exited (read returns EOF). For a
+        still-running process, performs a non-blocking read of available bytes.
+        """
+        if not proc.stderr:
+            return ""
+        try:
+            import fcntl
+            fd = proc.stderr.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        except Exception:
+            pass
+
+        chunks = []
+        remaining = max_bytes
+        while remaining > 0:
+            try:
+                chunk = os.read(proc.stderr.fileno(), min(4096, remaining))
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        try:
+            return b"".join(chunks).decode("utf-8", errors="replace")
+        except Exception:
+            return ""
 
     def stop(self) -> bool:
         """Stop the FFmpeg streaming process. Guarantees process is dead before returning."""
@@ -577,8 +847,30 @@ class StreamManager:
         if not proc:
             return
 
+        start_time = self._start_time or time.time()
         proc.wait()
         exit_code = proc.returncode
+        runtime = time.time() - start_time
+
+        # Short-lived crash: probably a config/device error that won't fix
+        # itself with a restart. Count consecutive ones and bail after a few.
+        if runtime < 3 and exit_code != 0:
+            self._immediate_crash_count += 1
+            if self._immediate_crash_count >= self._max_immediate_crashes:
+                with self._lock:
+                    self._stats["status"] = "error"
+                    self._stats["pid"] = None
+                    self._process = None
+                self._should_run = False
+                self._add_log(
+                    f"FFmpeg crashed {self._immediate_crash_count} times within {int(runtime)}s — "
+                    "auto-restart disabled. Fix the config and click Start.",
+                    "error",
+                )
+                return
+        else:
+            # Survived >3s — treat the next short crash as a fresh problem.
+            self._immediate_crash_count = 0
 
         with self._lock:
             self._stats["status"] = "stopped"

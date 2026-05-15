@@ -62,7 +62,7 @@ In the imager settings (gear icon), set:
 SSH into the Pi and run:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/main/setup-pi.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/master/setup-pi.sh)"
 ```
 
 The script will:
@@ -225,6 +225,15 @@ arecord -l
 - OBS Studio 28+
 - Tailscale
 - ffmpeg with SRT support (for receiver script)
+
+## Equipment notes
+
+Tested primary rig:
+
+- **Camera:** DJI Osmo Action as USB webcam (UVC, MJPEG 1920×1080 @ 30fps). Registers multiple `/dev/videoN` nodes — the dashboard auto-picks the right capture node. Hardware encoder (`h264_v4l2m2m`) handles this at 2500–3500 kbps comfortably on a Pi 4.
+- **Microphone:** DJI Mic as USB audio (ALSA `plughw:CARD,0`, stereo s16le 48kHz). The Mic's ALSA card index can shift between reboots — the Pi resolves it back to the right `plughw:` automatically using the friendly name saved in `VIDEO_DEVICE_NAME` / `AUDIO_DEVICE_NAME`.
+
+The dashboard auto-selects devices whose name contains "DJI" or "Osmo" on plug-in, so the normal workflow is: plug both in, open the dashboard, click **Start**.
 
 ## License
 

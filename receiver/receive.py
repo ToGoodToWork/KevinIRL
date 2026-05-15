@@ -19,6 +19,7 @@ In OBS, add Media Source with:
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -73,33 +74,55 @@ def build_srt_url(port: int, passphrase: str) -> str:
 
 
 def run_receiver(ffmpeg: str, srt_url: str, obs_port: int):
-    """Run ffmpeg as SRT listener, outputting to local UDP for OBS."""
+    """Run ffmpeg as SRT listener, outputting to local UDP for OBS.
+
+    Uses -progress pipe:2 so we get stable key=value progress on stderr (easier
+    to parse than the human-readable single line) alongside ffmpeg's own log
+    lines about input format, etc.
+    """
     cmd = [
         ffmpeg,
         "-hide_banner",
-        "-loglevel", "warning",
-        "-stats",
+        "-loglevel", "info",
+        "-stats_period", "1",
+        "-progress", "pipe:2",
         "-i", srt_url,
         "-c", "copy",
         "-f", "mpegts",
         f"udp://127.0.0.1:{obs_port}?pkt_size=1316",
     ]
 
-    print(f"  Command: {' '.join(cmd)}")
-    print()
-
     return subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        bufsize=1,
     )
+
+
+# Regex for parsing ffmpeg's "Input #0" line:
+# "Stream #0:0: Video: mjpeg (Baseline), yuvj420p(...), 1920x1080 [...], 30 fps, ..."
+_RE_VIDEO = re.compile(
+    r"Stream #\d+[:\.]\d+.*Video:\s*(\w+).*?,\s*(\d+x\d+).*?(\d+(?:\.\d+)?)\s*fps",
+    re.IGNORECASE,
+)
+_RE_AUDIO = re.compile(
+    r"Stream #\d+[:\.]\d+.*Audio:\s*(\w+).*?(\d+)\s*Hz.*?(\w+)",
+    re.IGNORECASE,
+)
 
 
 def main():
     parser = argparse.ArgumentParser(description="KevinStream SRT Receiver")
     parser.add_argument("--port", type=int, default=9000, help="SRT listen port (default: 9000)")
     parser.add_argument("--obs-port", type=int, default=9001, help="Local UDP port for OBS (default: 9001)")
-    parser.add_argument("--passphrase", type=str, default="", help="SRT passphrase (min 10 chars, or empty for none)")
+    parser.add_argument(
+        "--passphrase",
+        type=str,
+        default=os.environ.get("KEVINSTREAM_PASSPHRASE", ""),
+        help="SRT passphrase (REQUIRED, min 10 chars). Must match SRT_PASSPHRASE in the Pi's stream.conf. "
+             "Can also be set via KEVINSTREAM_PASSPHRASE env var.",
+    )
     args = parser.parse_args()
 
     print()
@@ -139,60 +162,104 @@ def main():
 
     print("  [OK] SRT support detected")
 
-    # Validate passphrase
-    if args.passphrase and len(args.passphrase) < 10:
+    # Validate passphrase (required, ≥10 chars).
+    if not args.passphrase:
+        print("[ERROR] --passphrase is required.")
+        print()
+        print("  Use the same value you set during setup-pi.sh on the Pi")
+        print("  (look in /opt/kevinstream/pi/stream/stream.conf → SRT_PASSPHRASE).")
+        print()
+        print("  Pass it via --passphrase, the KEVINSTREAM_PASSPHRASE env var,")
+        print("  or run ./start-receiver.sh which will prompt and save it.")
+        sys.exit(1)
+    if len(args.passphrase) < 10:
         print(f"[ERROR] Passphrase must be at least 10 characters (got {len(args.passphrase)})")
         sys.exit(1)
 
     srt_url = build_srt_url(args.port, args.passphrase)
+    direct_srt_for_obs = f"srt://:{args.port}?mode=listener&passphrase={args.passphrase}"
 
+    print()
+    print("  Two ways to feed OBS — pick ONE:")
+    print()
+    print("  ┌─ Option A — OBS receives SRT directly (skip this script) ─────┐")
+    print(f"  │  Media Source URL : {direct_srt_for_obs}")
+    print("  │  Input Format     : mpegts")
+    print("  └──────────────────────────────────────────────────────────────┘")
+    print()
+    print("  ┌─ Option B — Use THIS receiver as a relay (auto-reconnects) ──┐")
+    print(f"  │  Media Source URL : udp://127.0.0.1:{args.obs_port}")
+    print("  │  Input Format     : mpegts")
+    print("  │  Keep this terminal open while streaming.")
+    print("  └──────────────────────────────────────────────────────────────┘")
     print()
     print(f"  Listening on SRT port: {args.port}")
-    print(f"  Forwarding to OBS on:  udp://127.0.0.1:{args.obs_port}")
-    if args.passphrase:
-        print(f"  Passphrase: {'*' * len(args.passphrase)}")
-    else:
-        print("  Passphrase: none (Tailscale provides encryption)")
-    print()
-    print("  ┌─────────────────────────────────────────────┐")
-    print(f"  │  OBS Media Source → udp://127.0.0.1:{args.obs_port}    │")
-    print("  │  Input Format    → mpegts                  │")
-    print("  │  Uncheck 'Local File'                      │")
-    print("  └─────────────────────────────────────────────┘")
+    print(f"  Passphrase           : {'*' * len(args.passphrase)} ({len(args.passphrase)} chars)")
     print()
 
-    # Auto-restart loop
+    run_loop(ffmpeg, srt_url, args.obs_port)
+
+
+def run_loop(ffmpeg: str, srt_url: str, obs_port: int):
+    """Spawn ffmpeg, parse stats, restart on disconnect."""
     restart_count = 0
     backoff = 2
 
     while True:
         if restart_count > 0:
-            print(f"  [RECONNECT] Attempt #{restart_count} (waiting {backoff}s)...")
+            print(f"  [RECONNECT] Attempt #{restart_count} (waiting {int(backoff)}s)...")
             time.sleep(backoff)
             backoff = min(backoff * 1.5, 30)
         else:
             print("  [WAITING] Listening for Pi stream...")
 
-        proc = run_receiver(ffmpeg, srt_url, args.obs_port)
+        proc = run_receiver(ffmpeg, srt_url, obs_port)
+        connected = False
+        progress = {"frame": "0", "fps": "0", "bitrate": "0kbits/s", "speed": "1x", "drop_frames": "0"}
 
         try:
-            # Stream output line by line
-            for line in proc.stdout:
-                text = line.decode("utf-8", errors="replace").strip()
+            for raw in proc.stderr:
+                text = raw.decode("utf-8", errors="replace").rstrip()
                 if not text:
                     continue
 
-                # Reset backoff on successful data
-                if "frame=" in text or "size=" in text:
-                    if restart_count > 0:
-                        print("  [CONNECTED] Receiving stream from Pi")
+                # ffmpeg -progress writes lines like "fps=30.0", "bitrate=4521.3kbits/s",
+                # "drop_frames=0", "speed=1.00x", terminated by "progress=continue".
+                if "=" in text and not text.startswith(" ") and not text.startswith("["):
+                    key, _, value = text.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if key in progress:
+                        progress[key] = value
+                    if key == "progress":
+                        render_status(connected, progress)
+                    continue
+
+                # Structured ffmpeg log lines.
+                if "Stream #" in text and "Video:" in text:
+                    m = _RE_VIDEO.search(text)
+                    if m and not connected:
+                        codec, res, fps = m.group(1), m.group(2), m.group(3)
+                        print(f"\n  [CONNECTED] {res} {codec} @ {fps}fps — receiving from Pi")
+                        connected = True
                         restart_count = 0
                         backoff = 2
-                    # Print progress on same line
-                    sys.stdout.write(f"\r  {text}    ")
-                    sys.stdout.flush()
-                else:
-                    print(f"  {text}")
+                    continue
+                if "Stream #" in text and "Audio:" in text:
+                    m = _RE_AUDIO.search(text)
+                    if m:
+                        codec, hz, layout = m.group(1), m.group(2), m.group(3)
+                        print(f"  [AUDIO]    {codec} {hz}Hz {layout}")
+                    continue
+
+                # Useful info / errors get printed verbatim (with leading indent).
+                lower = text.lower()
+                if "error" in lower or "fatal" in lower:
+                    print(f"  [ERROR] {text}")
+                elif "warning" in lower:
+                    print(f"  [WARN]  {text}")
+                # Drop the rest — most "info" lines from ffmpeg are noise once
+                # we've extracted Stream info above.
 
             proc.wait()
 
@@ -203,12 +270,34 @@ def main():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-            break
+            return
 
-        # Process ended — restart
         exit_code = proc.returncode
-        print(f"\n  [DISCONNECTED] FFmpeg exited (code {exit_code})")
+        print(f"\n  [DISCONNECTED — waiting for Pi] (ffmpeg exit {exit_code})")
         restart_count += 1
+
+
+def render_status(connected: bool, progress: dict):
+    """Render a single in-place status line summarising the live stream."""
+    if not connected:
+        return
+    bitrate = progress.get("bitrate", "0kbits/s").replace("kbits/s", " kb/s").strip()
+    fps = progress.get("fps", "0")
+    speed = progress.get("speed", "1x")
+    drops = progress.get("drop_frames", "0")
+    # Parse out_time_us if present for uptime — fallback to frame count.
+    frame = progress.get("frame", "0")
+    # Flag clock drift visually.
+    drift_marker = ""
+    try:
+        spd = float(speed.rstrip("x"))
+        if spd < 0.93 or spd > 1.07:
+            drift_marker = "  ⚠ drift"
+    except ValueError:
+        pass
+    line = f"  [LIVE] {fps}fps | {bitrate} | drops: {drops} | speed: {speed}{drift_marker} | frames: {frame}"
+    sys.stdout.write("\r" + line + " " * 8)
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

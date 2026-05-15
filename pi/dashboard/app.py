@@ -14,8 +14,11 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 import config
+import devices as devices_helper
+import capabilities as capabilities_helper
 from monitors import system_monitor, stream_monitor, network_monitor
 from monitors import wifi_manager
+from monitors.device_monitor import monitor as device_monitor
 
 # Add stream directory to path for stream_manager import
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stream"))
@@ -37,6 +40,22 @@ psutil.cpu_percent(interval=None)
 # Start network watchdog (auto AP fallback)
 wifi_manager.start_watchdog()
 
+# Start device monitor (plug/unplug events + DJI auto-select)
+device_monitor.start()
+
+# Probe encoder/camera capabilities once at startup and log the result so the
+# user can troubleshoot why hardware encoding might be unavailable.
+try:
+    _initial_caps = capabilities_helper.probe_capabilities(use_cache=False)
+    _enc_states = ", ".join(
+        f"{name}={'available' if ok else 'unavailable'}"
+        for name, ok in _initial_caps.get("encoders", {}).items()
+    )
+    manager._add_log(f"Capabilities probed: {_enc_states}")
+    log.info("Capabilities: %s", _enc_states)
+except Exception as e:
+    log.warning("Capability probe at startup failed: %s", e)
+
 
 # ── Static / SPA ──────────────────────────────────────────────
 
@@ -52,6 +71,7 @@ def ws_stats(ws):
     """Push system + stream stats + logs + network to connected clients."""
     log.info("WebSocket client connected")
     last_log_id = 0
+    last_device_change = 0.0
     try:
         while True:
             sys_stats = system_monitor.get_stats()
@@ -64,6 +84,18 @@ def ws_stats(ws):
             if new_logs:
                 last_log_id = new_logs[-1]["id"]
 
+            # Include device list on every change. Skip the constant
+            # devices payload on idle ticks to keep messages small.
+            dev_state = device_monitor.get_state()
+            devices_payload = None
+            if dev_state["changed_at"] > last_device_change:
+                last_device_change = dev_state["changed_at"]
+                devices_payload = {
+                    "cameras": dev_state["cameras"],
+                    "microphones": dev_state["microphones"],
+                    "changed_at": dev_state["changed_at"],
+                }
+
             payload = {
                 "system": sys_stats,
                 **strm_stats,
@@ -72,6 +104,8 @@ def ws_stats(ws):
                 "logs": new_logs,
                 "timestamp": time.time(),
             }
+            if devices_payload is not None:
+                payload["devices"] = devices_payload
             ws.send(json.dumps(payload))
             time.sleep(config.STATS_INTERVAL)
     except Exception:
@@ -85,7 +119,12 @@ def stream_start():
     if manager.is_running:
         return jsonify({"ok": False, "error": "Stream already running"}), 409
     ok = manager.start()
-    return jsonify({"ok": ok})
+    if not ok:
+        return jsonify({
+            "ok": False,
+            "error": manager._last_error or "FFmpeg failed to start — see logs",
+        }), 500
+    return jsonify({"ok": True})
 
 
 @app.route("/api/stream/stop", methods=["POST"])
@@ -100,6 +139,47 @@ def stream_stop():
 def stream_restart():
     ok = manager.restart()
     return jsonify({"ok": ok})
+
+
+@app.route("/api/stream/force-stop", methods=["POST"])
+def stream_force_stop():
+    """Panic button: stop the manager AND kill any stray ffmpeg processes
+    running stream.sh. Used when the regular Stop button can't catch up.
+    """
+    try:
+        manager.stop()
+    except Exception as e:
+        log.warning("manager.stop() during force-stop raised: %s", e)
+
+    killed_pids: list[int] = []
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "ffmpeg.*stream.sh"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            killed_pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+        for pid in killed_pids:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        log.warning("pgrep/kill during force-stop failed: %s", e)
+
+    # Reset transient state so the UI re-enables Start.
+    manager._should_run = False
+    manager._immediate_crash_count = 0
+    with manager._lock:
+        manager._stats["status"] = "stopped"
+        manager._stats["pid"] = None
+        manager._process = None
+
+    if killed_pids:
+        manager._add_log(f"Force-killed {len(killed_pids)} ffmpeg process(es): {killed_pids}", "warn")
+    else:
+        manager._add_log("Force stop: no stray ffmpeg processes found")
+    return jsonify({"ok": True, "killed": killed_pids})
 
 
 @app.route("/api/stream/kill-orphans", methods=["POST"])
@@ -120,8 +200,33 @@ def stream_config_update():
     if not updates:
         return jsonify({"ok": False, "error": "No data"}), 400
     try:
+        # If the caller touched any of (ENCODER, WIDTH, HEIGHT, FPS, BITRATE),
+        # validate the resulting combination against the encoder limits.
+        relevant = {"ENCODER", "WIDTH", "HEIGHT", "FPS", "BITRATE"}
+        if relevant & set(updates.keys()):
+            current = manager.get_config()
+            effective = {k: updates.get(k, current.get(k, "")) for k in relevant}
+            try:
+                br_int = int(str(effective["BITRATE"]).replace("k", "").replace("K", ""))
+                w_int = int(effective["WIDTH"])
+                h_int = int(effective["HEIGHT"])
+                fps_int = int(effective["FPS"])
+            except (ValueError, TypeError):
+                # Empty/invalid scalar values are already rejected by
+                # update_config's _validate_config_value — let that raise.
+                pass
+            else:
+                ok, err = capabilities_helper.validate_combo(
+                    effective["ENCODER"], w_int, h_int, fps_int, br_int,
+                )
+                if not ok:
+                    manager._add_log(f"Config rejected: {err}", "warn")
+                    return jsonify({"ok": False, "error": err}), 400
         new_config = manager.update_config(updates)
         return jsonify({"ok": True, "config": new_config})
+    except ValueError as e:
+        manager._add_log(f"Config rejected: {e}", "warn")
+        return jsonify({"ok": False, "error": str(e)}), 400
     except PermissionError:
         log.error("Cannot write stream.conf - permission denied")
         return jsonify({"ok": False, "error": "Permission denied writing config. Run: sudo chmod 666 /opt/kevinstream/pi/stream/stream.conf"}), 500
@@ -152,109 +257,26 @@ def clear_logs():
 
 @app.route("/api/devices")
 def list_devices():
-    """List connected cameras and microphones."""
-    import re as _re
-    devices = {"cameras": [], "microphones": [], "errors": []}
+    """List connected cameras and microphones (force a fresh enumeration)."""
+    return jsonify(devices_helper.enumerate_all())
 
-    # Cameras: parse v4l2 devices (Linux only)
-    # Skip Pi internal hardware nodes (codecs, ISP, decoders) — they're not real cameras
-    _SKIP_DEVICES = {"bcm2835-codec", "bcm2835-isp", "rpi-hevc", "rpivid"}
 
-    try:
-        # Retry once if v4l2-ctl fails (USB device may still be initializing)
-        result = None
-        for attempt in range(2):
-            result = subprocess.run(
-                ["v4l2-ctl", "--list-devices"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                break
-            if attempt == 0:
-                time.sleep(1)
+@app.route("/api/capabilities")
+def get_capabilities():
+    """Return cached encoder/camera capability matrix."""
+    return jsonify(capabilities_helper.probe_capabilities(use_cache=True))
 
-        if result and result.returncode == 0:
-            current_name = ""
-            skip_group = False
-            group_found = False  # Only take first /dev/video per device group
-            for line in result.stdout.splitlines():
-                line = line.rstrip()
-                if not line:
-                    continue
-                if not line.startswith("\t") and not line.startswith(" "):
-                    current_name = line.rstrip(":")
-                    name_lower = current_name.lower()
-                    skip_group = any(s in name_lower for s in _SKIP_DEVICES)
-                    group_found = False  # Reset for new device group
-                elif "/dev/video" in line and not skip_group and not group_found:
-                    dev = line.strip()
-                    try:
-                        fmt_result = subprocess.run(
-                            ["v4l2-ctl", "-d", dev, "--list-formats-ext"],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        output = fmt_result.stdout
-                        if "Video Capture" in output or "mjpeg" in output.lower() or "yuyv" in output.lower():
-                            # Parse resolutions and their framerates
-                            # Format: "Size: Discrete WxH" followed by "Interval: Discrete Xs (Yfps)"
-                            res_fps = {}  # "WxH" -> [fps1, fps2, ...]
-                            current_res = None
-                            for fmt_line in output.splitlines():
-                                fmt_line = fmt_line.strip()
-                                if "Size:" in fmt_line and "x" in fmt_line:
-                                    for p in fmt_line.split():
-                                        if "x" in p and p[0].isdigit():
-                                            current_res = p
-                                            if current_res not in res_fps:
-                                                res_fps[current_res] = []
-                                elif "fps" in fmt_line and current_res:
-                                    # Parse "Interval: Discrete 0.033s (30.000 fps)"
-                                    fps_match = _re.search(r"([\d.]+)\s*fps", fmt_line)
-                                    if fps_match:
-                                        fps_val = float(fps_match.group(1))
-                                        if fps_val not in res_fps[current_res]:
-                                            res_fps[current_res].append(fps_val)
 
-                            resolutions = sorted(res_fps.keys(),
-                                key=lambda r: int(r.split("x")[0]), reverse=True)
-                            devices["cameras"].append({
-                                "device": dev,
-                                "name": current_name,
-                                "resolutions": resolutions,
-                                "fps_by_resolution": {r: sorted(f, reverse=True) for r, f in res_fps.items()},
-                            })
-                            group_found = True  # Skip remaining /dev/video in this group
-                    except Exception:
-                        pass
-        elif result:
-            devices["errors"].append(f"v4l2-ctl failed (exit {result.returncode})")
-    except subprocess.TimeoutExpired:
-        devices["errors"].append("Camera detection timed out")
-    except FileNotFoundError:
-        devices["errors"].append("v4l2-ctl not found")
-    except Exception as e:
-        devices["errors"].append(f"Camera detection error: {str(e)}")
-
-    # Microphones: parse ALSA capture devices
-    try:
-        result = subprocess.run(
-            ["arecord", "-l"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                m = _re.match(r"card (\d+):.*\[(.+?)\].*device (\d+):.*\[(.+?)\]", line)
-                if m:
-                    card, card_name, device, dev_name = m.groups()
-                    devices["microphones"].append({
-                        "device": f"plughw:{card},{device}",
-                        "name": f"{card_name} - {dev_name}",
-                        "card": int(card),
-                    })
-    except Exception:
-        pass
-
-    return jsonify(devices)
+@app.route("/api/capabilities/refresh", methods=["POST"])
+def refresh_capabilities():
+    """Force a fresh capability probe."""
+    caps = capabilities_helper.probe_capabilities(use_cache=False)
+    _enc_states = ", ".join(
+        f"{name}={'available' if ok else 'unavailable'}"
+        for name, ok in caps.get("encoders", {}).items()
+    )
+    manager._add_log(f"Capabilities re-probed: {_enc_states}")
+    return jsonify(caps)
 
 
 @app.route("/api/system/restart-service", methods=["POST"])

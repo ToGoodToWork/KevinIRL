@@ -7,6 +7,7 @@ let obsConnected = false;
 let currentScene = "";
 let obsRecording = false;
 let obsStreaming = false;
+let capabilities = null;
 
 const $ = (id) => document.getElementById(id);
 const MAX_LOG_LINES = 200;
@@ -32,6 +33,11 @@ function connectStats() {
         updateNetworkUI(data);
         if (data.logs && data.logs.length > 0) {
             appendLogs(data.logs);
+        }
+        // The DeviceMonitor only includes `devices` when the set has changed,
+        // so we can re-apply unconditionally here.
+        if (data.devices) {
+            applyDeviceList(data.devices, { source: "monitor" });
         }
     };
 
@@ -227,6 +233,44 @@ function formatDuration(seconds) {
 // Logs
 // ══════════════════════════════════════════════════════════════
 
+// In-memory log buffer so filter chips can re-render without losing history.
+const logBuffer = [];
+let logFilter = "all";
+
+function logMatchesFilter(entry) {
+    if (logFilter === "all") return true;
+    if (logFilter === "stats") return /^\[stream\]/.test(entry.text);
+    return entry.level === logFilter;
+}
+
+function renderLogEntry(entry) {
+    const div = document.createElement("div");
+    div.className = "log-line";
+    const cls = entry.level === "error" ? "log-error" : entry.level === "warn" ? "log-warn" : "log-info";
+    div.innerHTML = `<span class="log-time">${entry.time}</span> <span class="${cls}">${escapeHtml(entry.text)}</span>`;
+    return div;
+}
+
+function rerenderLogs() {
+    const terminal = $("logTerminal");
+    terminal.innerHTML = "";
+    const visible = logBuffer.filter(logMatchesFilter);
+    if (visible.length === 0) {
+        terminal.innerHTML = '<div class="dim small">No log lines match this filter.</div>';
+        return;
+    }
+    visible.forEach((entry) => terminal.appendChild(renderLogEntry(entry)));
+    terminal.scrollTop = terminal.scrollHeight;
+}
+
+function setLogFilter(filter) {
+    logFilter = filter;
+    document.querySelectorAll("#logFilters .log-filter-chip").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.filter === filter);
+    });
+    rerenderLogs();
+}
+
 function appendLogs(entries) {
     const terminal = $("logTerminal");
 
@@ -236,13 +280,16 @@ function appendLogs(entries) {
     }
 
     entries.forEach((entry) => {
-        const div = document.createElement("div");
-        div.className = "log-line";
-        const cls = entry.level === "error" ? "log-error" : entry.level === "warn" ? "log-warn" : "log-info";
-        div.innerHTML = `<span class="log-time">${entry.time}</span> <span class="${cls}">${escapeHtml(entry.text)}</span>`;
-        terminal.appendChild(div);
+        logBuffer.push(entry);
+        if (logMatchesFilter(entry)) {
+            terminal.appendChild(renderLogEntry(entry));
+        }
     });
 
+    // Cap in-memory buffer at 4× the DOM cap so filter switches still have history.
+    while (logBuffer.length > MAX_LOG_LINES * 4) {
+        logBuffer.shift();
+    }
     while (terminal.children.length > MAX_LOG_LINES) {
         terminal.removeChild(terminal.firstChild);
     }
@@ -251,6 +298,7 @@ function appendLogs(entries) {
 }
 
 function clearLogs() {
+    logBuffer.length = 0;
     $("logTerminal").innerHTML = '<div class="dim small">Logs cleared</div>';
     fetch("/api/logs/clear", { method: "POST" });
 }
@@ -307,11 +355,32 @@ async function checkTarget() {
 // Stream Control
 // ══════════════════════════════════════════════════════════════
 
+async function forceStop() {
+    if (!confirm("Force-kill all ffmpeg streaming processes? This is a panic button — use only if Stop/Restart aren't working.")) return;
+    try {
+        const res = await fetch("/api/stream/force-stop", { method: "POST" });
+        const data = await res.json();
+        const n = (data.killed || []).length;
+        showToast(n ? `Force-killed ${n} ffmpeg process(es)` : "No ffmpeg processes found", n ? "warn" : "info");
+    } catch (e) {
+        console.error("Force stop failed:", e);
+        showToast("Force stop failed — see console", "error");
+    }
+}
+
 async function streamControl(action) {
     try {
         const res = await fetch(`/api/stream/${action}`, { method: "POST" });
         const data = await res.json();
-        if (!data.ok) console.warn(`Stream ${action} failed:`, data.error);
+        if (!data.ok) {
+            console.warn(`Stream ${action} failed:`, data.error);
+            // Surface immediate-launch failures (config errors, missing devices,
+            // bad encoder options) to the user. Anything more subtle will land in
+            // the Logs panel via _add_log.
+            if (action === "start" && data.error) {
+                alert(`Stream failed to start:\n\n${data.error}\n\nSee the Logs panel for details.`);
+            }
+        }
     } catch (e) {
         console.error(`Stream ${action} error:`, e);
     }
@@ -367,6 +436,111 @@ async function loadConfig() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Capabilities
+// ══════════════════════════════════════════════════════════════
+
+async function loadCapabilities() {
+    try {
+        const res = await fetch("/api/capabilities");
+        capabilities = await res.json();
+    } catch (e) {
+        console.error("Failed to load capabilities:", e);
+        capabilities = { encoders: {}, encoder_limits: {}, available_encoders: [] };
+    }
+    applyEncoderCapabilities();
+    onEncoderChange();
+}
+
+function applyEncoderCapabilities() {
+    if (!capabilities) return;
+    const sel = $("settingEncoder");
+    const note = $("encoderNote");
+    const enc = capabilities.encoders || {};
+
+    [...sel.options].forEach((opt) => {
+        const available = !!enc[opt.value];
+        opt.disabled = !available;
+        opt.textContent = opt.textContent.replace(/\s*\(unavailable\)$/, "");
+        if (!available) opt.textContent += " (unavailable)";
+    });
+
+    if (!enc.h264_v4l2m2m && enc.libx264) {
+        note.textContent = "Hardware encoder unavailable on this Pi — using software (higher CPU).";
+        note.style.color = "var(--yellow)";
+    } else if (enc.h264_v4l2m2m && !enc.libx264) {
+        note.textContent = "Software encoder unavailable — hardware encoding only.";
+        note.style.color = "";
+    } else if (!enc.h264_v4l2m2m && !enc.libx264) {
+        note.textContent = "No encoders available — stream cannot start.";
+        note.style.color = "var(--red)";
+    } else {
+        note.textContent = "";
+    }
+
+    // If the saved encoder is disabled, fall back to the first available.
+    if (sel.options[sel.selectedIndex]?.disabled) {
+        const firstOk = [...sel.options].find((o) => !o.disabled);
+        if (firstOk) sel.value = firstOk.value;
+    }
+}
+
+function onEncoderChange() {
+    if (!capabilities) return;
+    const enc = $("settingEncoder").value;
+    const limits = (capabilities.encoder_limits || {})[enc] || {};
+    capLimits(limits);
+}
+
+function capLimits(limits) {
+    // Bitrate cap
+    const brSel = $("settingBitrate");
+    const maxBr = limits.max_bitrate_kbps || 99999;
+    [...brSel.options].forEach((opt) => {
+        const v = parseInt(opt.value);
+        opt.disabled = !isNaN(v) && v > maxBr;
+        opt.textContent = opt.textContent.replace(/\s*\(too high\)$/, "");
+        if (opt.disabled) opt.textContent += " (too high)";
+    });
+    if (brSel.options[brSel.selectedIndex]?.disabled) {
+        const firstOk = [...brSel.options].reverse().find((o) => !o.disabled);
+        if (firstOk) {
+            const prev = brSel.value;
+            brSel.value = firstOk.value;
+            showToast(`Bitrate adjusted ${prev} → ${firstOk.value} for selected encoder`, "info");
+        }
+    }
+
+    // Resolution cap
+    const resSel = $("settingResolution");
+    [...resSel.options].forEach((opt) => {
+        const [w, h] = opt.value.split("x").map((x) => parseInt(x));
+        if (isNaN(w) || isNaN(h)) return;
+        opt.disabled = w > (limits.max_width || 99999) || h > (limits.max_height || 99999);
+        opt.textContent = opt.textContent.replace(/\s*\(too high\)$/, "");
+        if (opt.disabled) opt.textContent += " (too high)";
+    });
+    if (resSel.options[resSel.selectedIndex]?.disabled) {
+        const firstOk = [...resSel.options].find((o) => !o.disabled);
+        if (firstOk) resSel.value = firstOk.value;
+    }
+    updateFpsForResolution();
+
+    // FPS cap (re-applied after updateFpsForResolution rebuilt the list)
+    const fpsSel = $("settingFps");
+    const maxFps = limits.max_fps || 999;
+    [...fpsSel.options].forEach((opt) => {
+        const v = parseInt(opt.value);
+        opt.disabled = !isNaN(v) && v > maxFps;
+        opt.textContent = opt.textContent.replace(/\s*\(too high\)$/, "");
+        if (opt.disabled) opt.textContent += " (too high)";
+    });
+    if (fpsSel.options[fpsSel.selectedIndex]?.disabled) {
+        const firstOk = [...fpsSel.options].find((o) => !o.disabled);
+        if (firstOk) fpsSel.value = firstOk.value;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
 // Device Detection
 // ══════════════════════════════════════════════════════════════
 
@@ -374,52 +548,127 @@ async function detectDevices() {
     try {
         const res = await fetch("/api/devices");
         const devices = await res.json();
-
-        // Populate cameras
-        const camSelect = $("settingCamera");
-        camSelect.innerHTML = '<option value="none">Disabled</option>';
-        devices.cameras.forEach((cam) => {
-            const opt = document.createElement("option");
-            opt.value = cam.device;
-            // Show a clean name: strip "(platform:...)" from the device name
-            const cleanName = cam.name.replace(/\s*\(platform:[^)]+\)\s*/g, "").trim();
-            opt.textContent = `${cleanName} (${cam.device})`;
-            if (cam.resolutions && cam.resolutions.length > 0) {
-                opt.dataset.resolutions = JSON.stringify(cam.resolutions);
-            }
-            if (cam.fps_by_resolution) {
-                opt.dataset.fpsByResolution = JSON.stringify(cam.fps_by_resolution);
-            }
-            camSelect.appendChild(opt);
-        });
-
-        // Select current camera from config
-        if (window._loadedVideoDevice) {
-            const match = [...camSelect.options].find(o => o.value === window._loadedVideoDevice);
-            if (match) camSelect.value = window._loadedVideoDevice;
-        }
-
-        // Update resolution options based on selected camera
-        updateResolutionsForCamera();
-
-        // Populate microphones
-        const micSelect = $("settingAudio");
-        micSelect.innerHTML = '<option value="none">Disabled</option>';
-        devices.microphones.forEach((mic) => {
-            const opt = document.createElement("option");
-            opt.value = mic.device;
-            opt.textContent = mic.name;
-            micSelect.appendChild(opt);
-        });
-
-        // Select current audio device from config
-        if (window._loadedAudioDevice) {
-            const match = [...micSelect.options].find(o => o.value === window._loadedAudioDevice);
-            if (match) micSelect.value = window._loadedAudioDevice;
-        }
+        applyDeviceList(devices, { source: "manual" });
     } catch (e) {
         console.error("Device detection failed:", e);
     }
+}
+
+/**
+ * Render the device dropdowns from a device list, preserving the user's
+ * current selection where possible and surfacing a toast when a previously
+ * selected device is gone.
+ *
+ * Restore priority for each dropdown:
+ *   1. Current DOM selection (what the user just picked)
+ *   2. window._loaded{Video,Audio}Device (last persisted config)
+ *   3. First DJI/Osmo entry, then first non-"none" entry
+ *   4. "none"
+ */
+function applyDeviceList(devices, opts) {
+    opts = opts || {};
+    const camSelect = $("settingCamera");
+    const micSelect = $("settingAudio");
+
+    const previousCam = camSelect.value;
+    const previousCamLabel = camSelect.options[camSelect.selectedIndex]?.dataset?.friendlyName || previousCam;
+    const previousMic = micSelect.value;
+    const previousMicLabel = micSelect.options[micSelect.selectedIndex]?.dataset?.friendlyName || previousMic;
+
+    // Cameras
+    camSelect.innerHTML = '<option value="none">Disabled</option>';
+    devices.cameras.forEach((cam) => {
+        const opt = document.createElement("option");
+        opt.value = cam.device;
+        const cleanName = cam.name.replace(/\s*\(platform:[^)]+\)\s*/g, "").trim();
+        opt.textContent = `${cleanName} (${cam.device})`;
+        opt.dataset.friendlyName = cleanName;
+        if (cam.resolutions && cam.resolutions.length > 0) {
+            opt.dataset.resolutions = JSON.stringify(cam.resolutions);
+        }
+        if (cam.fps_by_resolution) {
+            opt.dataset.fpsByResolution = JSON.stringify(cam.fps_by_resolution);
+        }
+        camSelect.appendChild(opt);
+    });
+    const camResult = pickDeviceSelection(camSelect, previousCam, window._loadedVideoDevice);
+    camSelect.value = camResult.value;
+    if (camResult.lostDevice && previousCam !== "none") {
+        showToast(`Camera disconnected: ${previousCamLabel} — falling back to ${camResult.label}`, "warn");
+    }
+    updateResolutionsForCamera();
+
+    // Microphones
+    micSelect.innerHTML = '<option value="none">Disabled</option>';
+    devices.microphones.forEach((mic) => {
+        const opt = document.createElement("option");
+        opt.value = mic.device;
+        opt.textContent = mic.name;
+        opt.dataset.friendlyName = mic.card_name || mic.name;
+        micSelect.appendChild(opt);
+    });
+    const micResult = pickDeviceSelection(micSelect, previousMic, window._loadedAudioDevice);
+    micSelect.value = micResult.value;
+    if (micResult.lostDevice && previousMic !== "none") {
+        showToast(`Microphone disconnected: ${previousMicLabel} — falling back to ${micResult.label}`, "warn");
+    }
+}
+
+function pickDeviceSelection(selectEl, previousValue, loadedValue) {
+    const options = [...selectEl.options];
+    const optByValue = (v) => v && options.find((o) => o.value === v);
+
+    // Priority 1: current DOM selection still present.
+    if (previousValue && previousValue !== "none") {
+        const m = optByValue(previousValue);
+        if (m) return { value: m.value, label: m.dataset.friendlyName || m.value, lostDevice: false };
+    }
+    const lostDevice = !!(previousValue && previousValue !== "none" && !optByValue(previousValue));
+
+    // Priority 2: last-loaded config value.
+    if (loadedValue) {
+        const m = optByValue(loadedValue);
+        if (m) return { value: m.value, label: m.dataset.friendlyName || m.value, lostDevice };
+    }
+
+    // Priority 3: prefer DJI/Osmo, then first available.
+    const firstReal = options.find((o) => o.value !== "none");
+    if (!firstReal) return { value: "none", label: "Disabled", lostDevice };
+    const dji = options.find((o) => o.value !== "none" && /dji|osmo/i.test(o.dataset.friendlyName || o.textContent));
+    const chosen = dji || firstReal;
+    return { value: chosen.value, label: chosen.dataset.friendlyName || chosen.value, lostDevice };
+}
+
+async function onAudioDeviceChange() {
+    const sel = $("settingAudio");
+    const opt = sel.options[sel.selectedIndex];
+    window._loadedAudioDevice = sel.value;
+    try {
+        await fetch("/api/stream/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                AUDIO_DEVICE: sel.value,
+                AUDIO_DEVICE_NAME: (opt && opt.dataset.friendlyName) || "",
+            }),
+        });
+    } catch (e) {
+        console.error("Failed to persist audio device selection:", e);
+    }
+}
+
+// ── Toasts ──
+function showToast(text, level) {
+    const container = $("toastContainer");
+    if (!container) return;
+    const div = document.createElement("div");
+    div.className = `toast toast-${level || "info"}`;
+    div.textContent = text;
+    container.appendChild(div);
+    setTimeout(() => {
+        div.classList.add("toast-fade");
+        setTimeout(() => div.remove(), 400);
+    }, 4000);
 }
 
 function updateResolutionsForCamera() {
@@ -501,6 +750,9 @@ async function saveSettings() {
 
     const fps = $("settingFps").value;
 
+    const camOpt = $("settingCamera").options[$("settingCamera").selectedIndex];
+    const micOpt = $("settingAudio").options[$("settingAudio").selectedIndex];
+
     const updates = {
         PROTOCOL: proto,
         ENCODER: $("settingEncoder").value,
@@ -512,7 +764,9 @@ async function saveSettings() {
         FPS: fps,
         GOP_SIZE: String(parseInt(fps)),
         VIDEO_DEVICE: $("settingCamera").value,
+        VIDEO_DEVICE_NAME: (camOpt && camOpt.dataset.friendlyName) || "",
         AUDIO_DEVICE: $("settingAudio").value,
+        AUDIO_DEVICE_NAME: (micOpt && micOpt.dataset.friendlyName) || "",
         AUDIO_CHANNELS: $("settingAudioChannels").value,
     };
 
@@ -872,5 +1126,5 @@ async function apDisable() {
 // ══════════════════════════════════════════════════════════════
 
 loadObsSettings();
-loadConfig();
+loadCapabilities().then(loadConfig);
 connectStats();
