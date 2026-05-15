@@ -4,3 +4,12 @@ venv/
 .env
 *.log
 .claude/
+
+# Runtime stream config — derived from stream.conf.example on first install.
+# Pi-local values (SRT_HOST, SRT_PASSPHRASE, device paths, bitrate tweaks)
+# live here and must not collide with upstream pulls.
+pi/stream/stream.conf
+
+# OS / tooling clutter
+.DS_Store
+.playwright-mcp/

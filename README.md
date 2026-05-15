@@ -186,9 +186,16 @@ If all connections fail, the Pi automatically creates a WiFi hotspot called **Ke
 On the Pi:
 
 ```bash
-cd ~/KevinIRL && git pull
-sudo cp -r pi/* /opt/kevinstream/pi/
-sudo systemctl restart kevinstream
+sudo bash -c "cd /opt/kevinstream && git pull && systemctl restart kevinstream"
+```
+
+Your local `pi/stream/stream.conf` is gitignored, so pulls never touch your
+SRT host, passphrase, or device selections. The tracked template at
+`pi/stream/stream.conf.example` is only used to bootstrap a fresh install.
+If a future release adds new keys, copy them across by hand or compare:
+
+```bash
+sudo diff /opt/kevinstream/pi/stream/stream.conf /opt/kevinstream/pi/stream/stream.conf.example
 ```
 
 ## Useful Commands

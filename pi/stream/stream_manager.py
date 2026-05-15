@@ -21,6 +21,28 @@ log = logging.getLogger("stream_manager")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAM_SH = os.path.join(SCRIPT_DIR, "stream.sh")
 CONF_FILE = os.path.join(SCRIPT_DIR, "stream.conf")
+CONF_EXAMPLE = os.path.join(SCRIPT_DIR, "stream.conf.example")
+
+
+def _ensure_conf_exists():
+    """Bootstrap stream.conf from stream.conf.example if missing.
+
+    stream.conf is gitignored — it holds Pi-local runtime settings
+    (SRT_HOST, passphrase, device picks). The example file is the
+    tracked template; we copy it on first run after a fresh clone.
+    """
+    if os.path.exists(CONF_FILE):
+        return
+    if not os.path.exists(CONF_EXAMPLE):
+        raise FileNotFoundError(
+            f"Neither {CONF_FILE} nor {CONF_EXAMPLE} exists — "
+            "config bootstrap impossible."
+        )
+    import shutil
+    shutil.copy(CONF_EXAMPLE, CONF_FILE)
+
+
+_ensure_conf_exists()
 
 MAX_LOG_LINES = 200
 

@@ -7,9 +7,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_FILE="${SCRIPT_DIR}/stream.conf"
+CONF_EXAMPLE="${SCRIPT_DIR}/stream.conf.example"
+
+# Bootstrap from the template on first run so a fresh clone or post-pull
+# state always has a working stream.conf. The real file is gitignored.
+if [ ! -f "$CONF_FILE" ] && [ -f "$CONF_EXAMPLE" ]; then
+    cp "$CONF_EXAMPLE" "$CONF_FILE"
+    echo "Created ${CONF_FILE} from template"
+fi
 
 if [ ! -f "$CONF_FILE" ]; then
-    echo "ERROR: Config file not found: $CONF_FILE"
+    echo "ERROR: Config file not found: $CONF_FILE (no template at $CONF_EXAMPLE either)"
     exit 1
 fi
 

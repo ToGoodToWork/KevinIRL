@@ -196,6 +196,15 @@ echo ""
 info "━━━ Step 6/7: Stream configuration ━━━"
 
 CONF_FILE="${INSTALL_DIR}/pi/stream/stream.conf"
+CONF_EXAMPLE="${INSTALL_DIR}/pi/stream/stream.conf.example"
+
+# stream.conf is gitignored runtime config; the tracked template is
+# stream.conf.example. Create stream.conf on first install (and never
+# overwrite an existing one — preserve the user's local edits).
+if [ ! -f "$CONF_FILE" ] && [ -f "$CONF_EXAMPLE" ]; then
+    cp "$CONF_EXAMPLE" "$CONF_FILE"
+    ok "Created stream.conf from template"
+fi
 
 echo ""
 echo -e "${CYAN}Configure your stream settings:${NC}"
