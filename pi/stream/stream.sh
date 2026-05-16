@@ -34,8 +34,17 @@ elif [ "${PROTOCOL}" = "srt" ]; then
     OUTPUT_URL="srt://${SRT_HOST}:${SRT_PORT}?mode=${SRT_MODE}&latency=${SRT_LATENCY}"
     OUTPUT_URL="${OUTPUT_URL}&oheadbw=${SRT_OHEADBW:-25}"
     OUTPUT_URL="${OUTPUT_URL}&sndbuf=${SRT_SNDBUF:-1500000}&rcvbuf=${SRT_RCVBUF:-1500000}"
+    # SRT requires passphrase length 10–79 chars. Outside that range the option
+    # is rejected with "Operation not supported: Bad parameters" and ffmpeg
+    # crashes. Degrade to unencrypted with a clear warning rather than crash.
     if [ -n "${SRT_PASSPHRASE}" ]; then
-        OUTPUT_URL="${OUTPUT_URL}&passphrase=${SRT_PASSPHRASE}"
+        pp_len=${#SRT_PASSPHRASE}
+        if [ "$pp_len" -ge 10 ] && [ "$pp_len" -le 79 ]; then
+            OUTPUT_URL="${OUTPUT_URL}&passphrase=${SRT_PASSPHRASE}"
+        else
+            echo "WARNING: SRT_PASSPHRASE is ${pp_len} chars — SRT requires 10–79." >&2
+            echo "WARNING: Streaming UNENCRYPTED. Set a 10+ char passphrase to enable encryption." >&2
+        fi
     fi
     OUTPUT_FORMAT="mpegts"
     echo "=== KevinStream (SRT) ==="
