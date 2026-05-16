@@ -312,8 +312,9 @@ def network_status():
 
 @app.route("/api/network/wifi/scan")
 def wifi_scan():
-    networks = wifi_manager.scan_wifi()
-    return jsonify(networks)
+    # Returns {"networks": [...], "error": None|str} — frontend renders error
+    # when present instead of falling back to a generic "no networks found".
+    return jsonify(wifi_manager.scan_wifi())
 
 
 @app.route("/api/network/wifi/connect", methods=["POST"])

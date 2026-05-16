@@ -1021,9 +1021,18 @@ async function wifiScan() {
 
     try {
         const res = await fetch("/api/network/wifi/scan");
-        const networks = await res.json();
+        const data = await res.json();
+        // Backend now returns { networks: [], error: null|str }. Tolerate the
+        // old bare-array shape too in case the frontend gets cached ahead of
+        // a backend update.
+        const networks = Array.isArray(data) ? data : (data.networks || []);
+        const errMsg = Array.isArray(data) ? null : (data.error || null);
 
         list.innerHTML = "";
+        if (errMsg) {
+            list.innerHTML = `<div class="dim small">${escapeHtml(errMsg)}</div>`;
+            return;
+        }
         if (!networks.length) {
             list.innerHTML = '<div class="dim small">No networks found</div>';
             return;

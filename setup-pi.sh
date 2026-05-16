@@ -277,6 +277,25 @@ cp "${INSTALL_DIR}/pi/systemd/kevinstream.service" /etc/systemd/system/
 sed -i "s|User=pi|User=${ACTUAL_USER}|" /etc/systemd/system/kevinstream.service
 sed -i "s|/opt/kevinstream/venv|${VENV_DIR}|" /etc/systemd/system/kevinstream.service
 
+# Sudoers drop-in: the dashboard service (running as ${ACTUAL_USER}) needs
+# passwordless nmcli for wifi scan/connect. Without this, sudo nmcli prompts
+# for a password it can't get in non-interactive systemd context — the wifi
+# scan silently returns empty.
+NMCLI_PATH="$(command -v nmcli || echo /usr/bin/nmcli)"
+SUDOERS_FILE="/etc/sudoers.d/kevinstream-nmcli"
+cat > "${SUDOERS_FILE}.tmp" <<EOF
+# Managed by KevinStream setup-pi.sh / update-pi.sh — DO NOT EDIT
+${ACTUAL_USER} ALL=(root) NOPASSWD: ${NMCLI_PATH}
+EOF
+chmod 0440 "${SUDOERS_FILE}.tmp"
+if visudo -c -f "${SUDOERS_FILE}.tmp" >/dev/null 2>&1; then
+    mv "${SUDOERS_FILE}.tmp" "${SUDOERS_FILE}"
+    ok "Sudoers drop-in installed (${ACTUAL_USER} may run ${NMCLI_PATH} without password)"
+else
+    rm -f "${SUDOERS_FILE}.tmp"
+    warn "Sudoers validation failed — wifi scan may not work until fixed manually"
+fi
+
 systemctl daemon-reload
 systemctl enable kevinstream.service
 systemctl start kevinstream.service

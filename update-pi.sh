@@ -122,6 +122,35 @@ if [ -d "${INSTALL_DIR}/venv" ] && [ -f "${INSTALL_DIR}/pi/requirements.txt" ]; 
     ok "Packages up to date."
 fi
 
+# ── 6.5. Ensure sudoers drop-in for nmcli (wifi scan needs it) ───────────
+# The dashboard service runs as the install user and calls `sudo nmcli` for
+# wifi scan/connect. Without NOPASSWD, sudo fails silently in the systemd
+# non-interactive context and the scan returns empty. Setup-pi.sh writes
+# this file; for already-installed Pis we ensure it exists here.
+echo ""
+info "━━━ Ensuring sudoers drop-in for nmcli ━━━"
+SUDOERS_FILE="/etc/sudoers.d/kevinstream-nmcli"
+NMCLI_PATH="$(command -v nmcli || echo /usr/bin/nmcli)"
+EXPECTED_LINE="${SERVICE_USER:-$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null)} ALL=(root) NOPASSWD: ${NMCLI_PATH}"
+if [ -z "$SERVICE_USER" ] || [ "$SERVICE_USER" = "root" ]; then
+    warn "Could not determine service user — skipping sudoers update."
+elif [ -f "$SUDOERS_FILE" ] && grep -qF "$EXPECTED_LINE" "$SUDOERS_FILE"; then
+    ok "Sudoers drop-in already correct."
+else
+    cat > "${SUDOERS_FILE}.tmp" <<EOF
+# Managed by KevinStream update-pi.sh / setup-pi.sh — DO NOT EDIT
+${EXPECTED_LINE}
+EOF
+    chmod 0440 "${SUDOERS_FILE}.tmp"
+    if visudo -c -f "${SUDOERS_FILE}.tmp" >/dev/null 2>&1; then
+        mv "${SUDOERS_FILE}.tmp" "${SUDOERS_FILE}"
+        ok "Sudoers drop-in installed (${SERVICE_USER} may run nmcli without password)."
+    else
+        rm -f "${SUDOERS_FILE}.tmp"
+        warn "Sudoers validation failed — wifi scan may not work until fixed manually."
+    fi
+fi
+
 # ── 7. Start the service again ────────────────────────────────────────────
 echo ""
 info "━━━ Starting kevinstream service ━━━"

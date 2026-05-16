@@ -20,15 +20,21 @@ FALLBACK_CHECK_INTERVAL = 10  # seconds
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[bool, str]:
-    """Run a command and return (success, output)."""
+    """Run a command and return (success, stdout). stderr is logged separately
+    so silent failures (rc!=0 with empty stdout) leave a trace in journalctl."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
         )
-        output = result.stdout.strip()
-        if not output and result.stderr:
-            output = result.stderr.strip()
-        return result.returncode == 0, output
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        if result.returncode != 0 or not stdout:
+            log.debug("cmd rc=%s: %s — stderr=%r", result.returncode, " ".join(cmd), stderr[:400])
+        # Legacy contract: if stdout is empty but stderr has content, return stderr
+        # as the "output" so callers can show *something* useful. Failures with
+        # ok=False still propagate.
+        out = stdout or stderr
+        return result.returncode == 0, out
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log.warning("Command failed: %s — %s", " ".join(cmd), e)
         return False, ""
@@ -137,44 +143,79 @@ def _get_signal_strength(device: str = "wlan0") -> int | None:
 # WiFi Scanning
 # ══════════════════════════════════════════════════════════════
 
-def scan_wifi() -> list[dict]:
-    """Scan for available WiFi networks."""
-    # Trigger a fresh scan (needs sudo for reliable results)
-    _run(["sudo", "nmcli", "device", "wifi", "rescan"], timeout=10)
-    time.sleep(3)  # Give scan time to complete
+_NMCLI_LIST_ARGS = [
+    "-f", "SSID,SIGNAL,SECURITY,ACTIVE",
+    "-t", "-e", "no",
+    "device", "wifi", "list", "--rescan", "yes",
+]
+_NMCLI_RESCAN_ARGS = ["device", "wifi", "rescan"]
 
-    ok, output = _run([
-        "sudo", "nmcli", "-f", "SSID,SIGNAL,SECURITY,ACTIVE",
-        "-t", "-e", "no",
-        "device", "wifi", "list", "--rescan", "yes",
-    ], timeout=15)
-    if not ok:
-        return []
 
-    networks = {}
+def _try_nmcli(args: list[str], timeout: int) -> tuple[bool, str]:
+    """Run nmcli unprivileged first; if that fails, retry under `sudo -n`.
+
+    -n = non-interactive: sudo fails fast if no password is cached / NOPASSWD
+    isn't configured, instead of hanging. This way the service degrades to a
+    clear error instead of timing out.
+    """
+    ok, out = _run(["nmcli"] + args, timeout=timeout)
+    if ok:
+        return True, out
+    ok2, out2 = _run(["sudo", "-n", "nmcli"] + args, timeout=timeout)
+    return ok2, (out2 or out)
+
+
+def scan_wifi() -> dict:
+    """Scan for available WiFi networks.
+
+    Returns:
+        {"networks": [...sorted by signal...], "error": None | str}
+
+    Failure modes are surfaced to the frontend instead of returning an empty
+    list silently. AP mode short-circuits with a clear explanation because
+    NetworkManager cannot scan and broadcast on the same radio simultaneously.
+    """
+    if is_ap_mode():
+        msg = "AP mode active — turn off the KevinIRL hotspot to scan for networks."
+        log.info("wifi scan skipped: %s", msg)
+        return {"networks": [], "error": msg}
+
+    # Trigger a fresh scan. NM rate-limits to ~30s between rescans even with
+    # --rescan yes, so back-to-back clicks return cached results — that's a
+    # NetworkManager constraint, not a bug.
+    rescan_ok, _ = _try_nmcli(_NMCLI_RESCAN_ARGS, timeout=10)
+    time.sleep(3)  # NM hardware scan takes 1–3s depending on driver
+
+    list_ok, output = _try_nmcli(_NMCLI_LIST_ARGS, timeout=15)
+    log.info("wifi scan: rescan_ok=%s list_ok=%s output_bytes=%d",
+             rescan_ok, list_ok, len(output))
+
+    if not list_ok:
+        snippet = output.splitlines()[0] if output else "(no output)"
+        if "not authorized" in output.lower() or "password" in output.lower():
+            err = "Permission denied running nmcli. Re-run update-pi.sh to install the sudoers drop-in."
+        else:
+            err = f"nmcli failed: {snippet[:160]}"
+        return {"networks": [], "error": err}
+
+    networks: dict[str, dict] = {}
     for line in output.splitlines():
-        # Split from the right side to handle SSIDs with colons
-        # Format: SSID:SIGNAL:SECURITY:ACTIVE
-        # ACTIVE is always yes/no (last field)
-        # SIGNAL is always a number
-        # Split on last 3 colons
+        # Format: SSID:SIGNAL:SECURITY:ACTIVE. SSID may contain colons (they're
+        # escaped by `-e no`, but defensive rsplit guards anyway).
         parts = line.rsplit(":", 3)
         if len(parts) < 4:
             continue
-
         ssid = parts[0].strip()
         if not ssid or ssid == "--":
             continue
-
         try:
             signal = int(parts[1])
         except ValueError:
             signal = 0
-
         security = parts[2] if parts[2] else "Open"
         active = parts[3].strip() == "yes"
 
-        # Keep strongest signal per SSID
+        # Dedup by SSID, keep strongest signal.
         if ssid not in networks or signal > networks[ssid]["signal"]:
             networks[ssid] = {
                 "ssid": ssid,
@@ -184,14 +225,13 @@ def scan_wifi() -> list[dict]:
                 "saved": False,
             }
 
-    # Mark saved networks
-    saved = get_saved_networks()
-    saved_ssids = {n["ssid"] for n in saved}
+    saved_ssids = {n["ssid"] for n in get_saved_networks()}
     for net in networks.values():
         net["saved"] = net["ssid"] in saved_ssids
 
-    # Sort by signal strength
-    return sorted(networks.values(), key=lambda n: n["signal"], reverse=True)
+    sorted_nets = sorted(networks.values(), key=lambda n: n["signal"], reverse=True)
+    log.info("wifi scan: parsed %d networks", len(sorted_nets))
+    return {"networks": sorted_nets, "error": None}
 
 
 # ══════════════════════════════════════════════════════════════
