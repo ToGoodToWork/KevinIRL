@@ -122,6 +122,17 @@ if [ -d "${INSTALL_DIR}/venv" ] && [ -f "${INSTALL_DIR}/pi/requirements.txt" ]; 
     ok "Packages up to date."
 fi
 
+# ── 6.4. Ensure log directory exists for the dashboard's rotating log ────
+echo ""
+info "━━━ Ensuring /var/log/kevinstream exists ━━━"
+LOG_DIR="/var/log/kevinstream"
+mkdir -p "$LOG_DIR"
+if [ -n "${SERVICE_USER:-}" ] && [ "$SERVICE_USER" != "root" ]; then
+    chown "${SERVICE_USER}:${SERVICE_USER}" "$LOG_DIR"
+fi
+chmod 0755 "$LOG_DIR"
+ok "Log dir at $LOG_DIR (owned by ${SERVICE_USER:-unknown})"
+
 # ── 6.5. Ensure sudoers drop-in for nmcli (wifi scan needs it) ───────────
 # The dashboard service runs as the install user and calls `sudo nmcli` for
 # wifi scan/connect. Without NOPASSWD, sudo fails silently in the systemd

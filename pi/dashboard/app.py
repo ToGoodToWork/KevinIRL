@@ -24,10 +24,41 @@ from monitors.device_monitor import monitor as device_monitor
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stream"))
 from stream_manager import manager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+def _configure_logging():
+    """Root logger: stderr (for systemd/journalctl) + rotating file at
+    /var/log/kevinstream/kevinstream.log so logs survive reboots and the
+    journald retention window. Falls back to stderr-only if the log dir
+    isn't writable (e.g. running outside the systemd unit context)."""
+    from logging.handlers import RotatingFileHandler
+
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Idempotent: clear any handlers basicConfig might have installed on import.
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    stream_h = logging.StreamHandler()
+    stream_h.setFormatter(fmt)
+    root.addHandler(stream_h)
+
+    log_path = "/var/log/kevinstream/kevinstream.log"
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        # 10 MB × 10 files = ~100 MB retention.
+        file_h = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=10)
+        file_h.setFormatter(fmt)
+        root.addHandler(file_h)
+    except (PermissionError, OSError) as e:
+        # Don't crash if the log dir isn't writable — journald still captures
+        # everything via the stderr handler.
+        sys.stderr.write(f"[dashboard] file logging disabled: {e}\n")
+
+
+_configure_logging()
 log = logging.getLogger("dashboard")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")

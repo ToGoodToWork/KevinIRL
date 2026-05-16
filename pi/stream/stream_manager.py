@@ -188,7 +188,9 @@ class StreamManager:
             return self._process is not None and self._process.poll() is None
 
     def _add_log(self, line: str, level: str = "info"):
-        """Add a line to the log buffer (thread-safe)."""
+        """Add a line to the in-memory UI ring buffer AND emit it to the
+        Python logger so FFmpeg stderr ends up in the rotating log file
+        (configured in app.py:_configure_logging)."""
         with self._lock:
             self._log_counter += 1
             self._log_buffer.append({
@@ -197,6 +199,15 @@ class StreamManager:
                 "text": line,
                 "level": level,
         })
+        # Mirror to the file/journald logger. Use a dedicated child logger so
+        # these lines are clearly labeled in the log file.
+        _logger = logging.getLogger("stream_manager.ffmpeg")
+        if level == "error":
+            _logger.error("%s", line)
+        elif level == "warn":
+            _logger.warning("%s", line)
+        else:
+            _logger.info("%s", line)
 
     def get_logs(self, since_id: int = 0) -> list:
         """Get log lines with id > since_id."""

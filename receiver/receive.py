@@ -17,6 +17,7 @@ In OBS, add Media Source with:
 """
 
 import argparse
+import logging
 import os
 import platform
 import re
@@ -24,6 +25,60 @@ import shutil
 import subprocess
 import sys
 import time
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+
+# ── Persistent receiver log ─────────────────────────────────────────────
+# All print() output is teed to ~/.kevinstream/receiver.log (cross-platform)
+# with rotation: 10 MB × 5 files = ~50 MB retained. Lets you grep yesterday's
+# session for "DISCONNECTED" / errors without re-running with --verbose.
+_LOG_DIR = Path.home() / ".kevinstream"
+_LOG_PATH = _LOG_DIR / "receiver.log"
+
+
+class _StdoutTee:
+    """Wraps a stream so anything written to it is also flushed to the
+    Python logger. Drops in-place \\r terminal updates (the [LIVE] status
+    line) so the log file doesn't fill with thousands of progress overwrites.
+    """
+    def __init__(self, original):
+        self._original = original
+        self._buf = ""
+
+    def write(self, s):
+        self._original.write(s)
+        # Carriage-return-only writes are in-place terminal updates; skip.
+        if "\n" not in s and "\r" in s:
+            return
+        self._buf += s
+        while "\n" in self._buf:
+            line, _, self._buf = self._buf.partition("\n")
+            line = line.strip("\r").rstrip()
+            if line:
+                logging.info(line)
+
+    def flush(self):
+        self._original.flush()
+
+    def isatty(self):
+        return getattr(self._original, "isatty", lambda: False)()
+
+
+def _setup_file_logging():
+    try:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(_LOG_PATH, maxBytes=10 * 1024 * 1024, backupCount=5)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(fh)
+        sys.stdout = _StdoutTee(sys.__stdout__)
+        sys.stderr = _StdoutTee(sys.__stderr__)
+        logging.info("── Receiver session start ──")
+        logging.info("log file: %s", _LOG_PATH)
+    except OSError as e:
+        sys.stderr.write(f"[receiver] file logging disabled: {e}\n")
 
 
 def find_ffmpeg() -> str:
@@ -128,6 +183,7 @@ _RE_AUDIO = re.compile(
 
 
 def main():
+    _setup_file_logging()
     parser = argparse.ArgumentParser(description="KevinStream SRT Receiver")
     parser.add_argument("--port", type=int, default=9000, help="SRT listen port (default: 9000)")
     parser.add_argument("--obs-port", type=int, default=9001, help="Local UDP port for OBS (default: 9001)")
@@ -144,6 +200,8 @@ def main():
     print("╔══════════════════════════════════════════════════╗")
     print("║           KevinStream Receiver                   ║")
     print("╚══════════════════════════════════════════════════╝")
+    print()
+    print(f"  Log file: {_LOG_PATH}")
     print()
 
     # Find ffmpeg

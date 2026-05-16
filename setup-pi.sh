@@ -270,6 +270,14 @@ else
 fi
 ok "Boot config optimized (gpu_mem=64)"
 
+# Log directory for the dashboard's RotatingFileHandler. Service runs as
+# ${ACTUAL_USER} so the dir needs to be writable by them.
+LOG_DIR="/var/log/kevinstream"
+mkdir -p "$LOG_DIR"
+chown "${ACTUAL_USER}:${ACTUAL_USER}" "$LOG_DIR"
+chmod 0755 "$LOG_DIR"
+ok "Log directory ready at $LOG_DIR"
+
 # Install systemd service
 cp "${INSTALL_DIR}/pi/systemd/kevinstream.service" /etc/systemd/system/
 
