@@ -7,6 +7,7 @@ import collections
 import logging
 import os
 import re
+import shlex
 import signal
 import subprocess
 import threading
@@ -48,16 +49,28 @@ MAX_LOG_LINES = 200
 
 
 def parse_conf(path: str) -> dict:
-    """Parse shell-style KEY=VALUE config file."""
+    """Parse shell-style KEY=VALUE config file.
+
+    Values may be shlex-quoted (we write them that way to survive bash `source`
+    when names contain spaces or parens, e.g. "Wireless Microphone RX" or
+    "OsmoPocket3 (usb-...)"). shlex.split handles both quoted and bare values.
+    """
     config = {}
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                config[key.strip()] = value.strip()
+            if "=" not in line:
+                continue
+            key, _, raw = line.partition("=")
+            key = key.strip()
+            raw = raw.strip()
+            try:
+                parts = shlex.split(raw, posix=True)
+            except ValueError:
+                parts = [raw]
+            config[key] = parts[0] if parts else ""
     return config
 
 
@@ -111,6 +124,26 @@ class StreamManager:
         # stop tight crash-restart loops on bad config.
         self._immediate_crash_count = 0
         self._max_immediate_crashes = 3
+
+        # Migrate any pre-existing unquoted stream.conf written by older versions.
+        # Idempotent — re-quoting an already-quoted value is a no-op.
+        self._rewrite_conf_quoted()
+
+    def _rewrite_conf_quoted(self):
+        """Re-write stream.conf so every value goes through shlex.quote.
+
+        Older versions wrote values like `AUDIO_DEVICE_NAME=Wireless Microphone RX`
+        which bash refuses to source. parse_conf is lenient enough to read those
+        broken lines, so we can recover by parsing then re-writing through the
+        new quoted writer.
+        """
+        try:
+            current = parse_conf(CONF_FILE)
+            if not current:
+                return
+            self.update_config(current)
+        except Exception as e:
+            log.warning("stream.conf rewrite-on-boot failed: %s", e)
 
     @property
     def stats(self) -> dict:
@@ -436,7 +469,7 @@ class StreamManager:
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
                 if key in validated:
-                    new_lines.append(f"{key}={validated[key]}\n")
+                    new_lines.append(f"{key}={shlex.quote(validated[key])}\n")
                     updated_keys.add(key)
                     continue
             new_lines.append(line)

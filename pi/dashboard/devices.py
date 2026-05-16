@@ -118,8 +118,39 @@ def list_microphones() -> list[dict]:
             "name": f"{card_name} - {dev_name}",
             "card_name": card_name,
             "card": int(card),
+            "channels": _guess_channels(card_name, dev_name),
+            "priority": _mic_priority(card_name, dev_name),
         })
     return mics
+
+
+# Mic priority tiers — higher wins when multiple mics are connected.
+# We prefer a dedicated external mic (DJI Wireless) over a camera's built-in
+# pinhole (DJI Pocket), and either over an unknown USB mic.
+_MIC_TIER_WIRELESS = 30   # DJI Wireless Mic RX
+_MIC_TIER_CAMERA   = 20   # DJI Pocket / Osmo built-in
+_MIC_TIER_USB_MIC  = 10   # generic USB mic
+_MIC_TIER_FALLBACK = 0
+
+
+def _mic_priority(card_name: str, dev_name: str) -> int:
+    blob = f"{card_name} {dev_name}".lower()
+    if "wireless microphone" in blob or "dji mic" in blob or " rx" in f" {blob}":
+        return _MIC_TIER_WIRELESS
+    if "dji" in blob or "osmo" in blob or "pocket" in blob:
+        return _MIC_TIER_CAMERA
+    if "usb" in blob and "mic" in blob:
+        return _MIC_TIER_USB_MIC
+    return _MIC_TIER_FALLBACK
+
+
+def _guess_channels(card_name: str, dev_name: str) -> int:
+    """Best-effort channel count by device family. DJI Wireless Mic RX is mono;
+    DJI Pocket camera mic is stereo. Default to 2 for unknowns."""
+    blob = f"{card_name} {dev_name}".lower()
+    if "wireless microphone" in blob or "dji mic" in blob:
+        return 1
+    return 2
 
 
 def enumerate_all() -> dict:
@@ -155,11 +186,11 @@ def pick_auto_camera(cameras: list[dict]) -> dict | None:
 
 
 def pick_auto_microphone(mics: list[dict]) -> dict | None:
-    """Choose the best mic to auto-select. Prefer DJI by name."""
+    """Choose the best mic to auto-select. Highest priority tier wins;
+    ties broken by lowest card index (deterministic across reboots)."""
     if not mics:
         return None
-    for mic in mics:
-        name = (mic.get("card_name") or mic.get("name") or "").lower()
-        if "dji" in name:
-            return mic
-    return mics[0]
+    return max(
+        mics,
+        key=lambda m: (m.get("priority", 0), -int(m.get("card", 99))),
+    )

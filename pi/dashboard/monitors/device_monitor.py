@@ -122,23 +122,42 @@ class DeviceMonitor:
 
         # Microphone
         current_audio = conf.get("AUDIO_DEVICE", "")
-        current_audio_present = bool(current_audio) and any(
-            m.get("device") == current_audio for m in devs.get("microphones", [])
-        )
+        mics = devs.get("microphones", [])
+        current_mic = next((m for m in mics if m.get("device") == current_audio), None)
+        current_audio_present = current_mic is not None
+        best = device_helpers.pick_auto_microphone(mics)
+
+        # Pick when:
+        # - nothing saved yet, OR
+        # - saved device is gone, OR
+        # - a higher-priority mic just appeared (e.g. DJI Mic plugged on top of
+        #   DJI Pocket) — only auto-upgrade between known/tagged mics, never
+        #   override a user pick that's already at the top tier or that we
+        #   never auto-selected (priority 0 = unknown/generic).
         needs_audio_pick = (
             current_audio in ("", "none")
             or not current_audio_present
         )
-        if needs_audio_pick:
-            pick = device_helpers.pick_auto_microphone(devs.get("microphones", []))
-            if pick:
-                if pick["device"] != current_audio:
-                    updates["AUDIO_DEVICE"] = pick["device"]
-                    updates["AUDIO_DEVICE_NAME"] = pick.get("card_name") or pick.get("name", "")
-                    if not silent:
-                        manager._add_log(
-                            f"Auto-selected microphone: {updates['AUDIO_DEVICE_NAME']} ({pick['device']})"
-                        )
+        if not needs_audio_pick and best and current_mic:
+            cur_tier = current_mic.get("priority", 0)
+            new_tier = best.get("priority", 0)
+            # Only upgrade if both the current and best are tagged devices we
+            # know about, and best is strictly better.
+            if new_tier > cur_tier and cur_tier > 0 and new_tier > 0:
+                needs_audio_pick = True
+
+        if needs_audio_pick and best:
+            if best["device"] != current_audio:
+                updates["AUDIO_DEVICE"] = best["device"]
+                updates["AUDIO_DEVICE_NAME"] = best.get("card_name") or best.get("name", "")
+                channels = best.get("channels")
+                if channels:
+                    updates["AUDIO_CHANNELS"] = str(channels)
+                if not silent:
+                    manager._add_log(
+                        f"Auto-selected microphone: {updates['AUDIO_DEVICE_NAME']} "
+                        f"({best['device']}, {channels or '?'}ch)"
+                    )
 
         if updates:
             try:
