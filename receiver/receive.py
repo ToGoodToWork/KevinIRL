@@ -80,16 +80,31 @@ def run_receiver(ffmpeg: str, srt_url: str, obs_port: int):
     to parse than the human-readable single line) alongside ffmpeg's own log
     lines about input format, etc.
     """
+    # UDP output: shrink the output fifo so stale stream data can't pile up.
+    # FFmpeg's default udp fifo_size is ~28 MB — at our typical 3 Mbps that's
+    # over a minute of buffer that replays into OBS after every restart. 65536
+    # bytes ≈ 175 ms at 3 Mbps; small enough to flush quickly, big enough to
+    # absorb normal jitter. overrun_nonfatal=1 so a momentary overrun drops
+    # packets instead of killing ffmpeg.
+    udp_url = (
+        f"udp://127.0.0.1:{obs_port}"
+        "?pkt_size=1316"
+        "&fifo_size=65536"
+        "&overrun_nonfatal=1"
+    )
     cmd = [
         ffmpeg,
         "-hide_banner",
         "-loglevel", "info",
         "-stats_period", "1",
         "-progress", "pipe:2",
+        "-fflags", "+nobuffer",
+        "-flags", "+low_delay",
         "-i", srt_url,
         "-c", "copy",
+        "-flush_packets", "1",
         "-f", "mpegts",
-        f"udp://127.0.0.1:{obs_port}?pkt_size=1316",
+        udp_url,
     ]
 
     return subprocess.Popen(

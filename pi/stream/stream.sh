@@ -112,7 +112,24 @@ elif [ "${ENCODER}" = "libx264" ]; then
     fi
 fi
 
+# Drain anything ALSA may have queued from the previous run so the new
+# ffmpeg starts reading "now" instead of replaying the kernel ring buffer.
+# Best-effort — failure is fine (device might already be busy, that path
+# logs its own error later).
+if [ "$AUDIO_DEVICE" != "none" ]; then
+    timeout 0.3 arecord -q -D "$AUDIO_DEVICE" -f S16_LE -r 48000 \
+        -c "${AUDIO_CHANNELS:-2}" -d 1 /dev/null 2>/dev/null || true
+fi
+
+# nobuffer + low_delay on inputs: don't pre-buffer; consume packets as
+# they arrive. flush_packets=1 on output: muxer doesn't hoard packets
+# waiting for a "complete" mpegts segment. Together these keep the
+# Pi-side internal queues as shallow as physically possible, so when
+# ffmpeg restarts there's nothing stale to drain — fresh audio hits the
+# wire immediately.
 exec ffmpeg \
+    -fflags +nobuffer \
+    -flags +low_delay \
     -use_wallclock_as_timestamps 1 \
     -f v4l2 \
     -thread_queue_size 1024 \
@@ -129,6 +146,7 @@ exec ffmpeg \
     ${ENCODER_ARGS} \
     ${AUDIO_SYNC_ARGS} \
     -max_muxing_queue_size 1024 \
+    -flush_packets 1 \
     -stats_period 1 \
     -f "${OUTPUT_FORMAT}" \
     "${OUTPUT_URL}"
