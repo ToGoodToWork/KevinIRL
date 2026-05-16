@@ -183,16 +183,33 @@ If all connections fail, the Pi automatically creates a WiFi hotspot called **Ke
 
 ## Updating
 
-On the Pi:
+On the Pi, run the updater script:
 
 ```bash
-sudo bash -c "cd /opt/kevinstream && git pull && systemctl restart kevinstream"
+sudo bash /opt/kevinstream/update-pi.sh
 ```
 
-Your local `pi/stream/stream.conf` is gitignored, so pulls never touch your
-SRT host, passphrase, or device selections. The tracked template at
-`pi/stream/stream.conf.example` is only used to bootstrap a fresh install.
-If a future release adds new keys, copy them across by hand or compare:
+Or one-shot from anywhere:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/master/update-pi.sh)"
+```
+
+The updater:
+
+1. Backs up your `pi/stream/stream.conf` to `/var/backups/kevinstream/`.
+2. Stops the service so a half-pulled state can't crash-loop.
+3. **Hard-resets** the repo to `origin/master` — wipes any local edits or
+   untracked junk that accumulated in the source tree.
+4. Restores your `stream.conf` (or bootstraps from `stream.conf.example` if
+   there wasn't one).
+5. Reinstalls Python packages if needed.
+6. Starts the service back up.
+
+`pi/stream/stream.conf` is gitignored — your SRT host, passphrase, device
+selections, and bitrate live there and are never touched by pulls. The
+tracked template at `pi/stream/stream.conf.example` is only used to
+bootstrap a fresh install. If a future release adds new keys, compare:
 
 ```bash
 sudo diff /opt/kevinstream/pi/stream/stream.conf /opt/kevinstream/pi/stream/stream.conf.example

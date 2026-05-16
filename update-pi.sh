@@ -1,0 +1,124 @@
+#!/bin/bash
+# KevinStream — Pi updater
+#
+# Pulls the latest code from origin/master, hard-resets the working tree so
+# any drift (mode bits, untracked junk, half-applied merges) is wiped out,
+# and restarts the systemd service.
+#
+# stream.conf is gitignored and lives outside the source tree from git's
+# perspective — this script preserves it across the reset by copying it to a
+# safe location, then putting it back. The tracked stream.conf.example is
+# never overwritten on top of an existing stream.conf.
+#
+# Usage (on the Pi):
+#   sudo bash /opt/kevinstream/update-pi.sh
+# Or remotely (fresh fetch):
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/master/update-pi.sh)"
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[INFO]${NC} $1"; }
+ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+err()   { echo -e "${RED}[ERROR]${NC} $1"; }
+
+INSTALL_DIR="/opt/kevinstream"
+CONF_FILE="${INSTALL_DIR}/pi/stream/stream.conf"
+CONF_EXAMPLE="${INSTALL_DIR}/pi/stream/stream.conf.example"
+BACKUP_DIR="/var/backups/kevinstream"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+
+if [ "$EUID" -ne 0 ]; then
+    err "Must be run as root (use sudo)."
+    exit 1
+fi
+
+if [ ! -d "$INSTALL_DIR/.git" ]; then
+    err "$INSTALL_DIR is not a git checkout. Run setup-pi.sh first."
+    exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+
+# ── 1. Preserve the runtime config ────────────────────────────────────────
+echo ""
+info "━━━ Preserving local stream.conf ━━━"
+
+if [ -f "$CONF_FILE" ]; then
+    cp "$CONF_FILE" "${BACKUP_DIR}/stream.conf.${TIMESTAMP}"
+    ok "Backed up to ${BACKUP_DIR}/stream.conf.${TIMESTAMP}"
+    SAVED_CONF=1
+else
+    warn "No existing stream.conf — will be bootstrapped from template."
+    SAVED_CONF=0
+fi
+
+# ── 2. Stop the service so a half-pulled state can't crash-loop ──────────
+echo ""
+info "━━━ Stopping kevinstream service ━━━"
+systemctl stop kevinstream 2>/dev/null || true
+ok "Service stopped (or wasn't running)."
+
+# ── 3. Hard-reset the working tree to origin/master ──────────────────────
+echo ""
+info "━━━ Fetching and resetting to origin/master ━━━"
+
+cd "$INSTALL_DIR"
+git fetch origin --prune
+# Discard tracked-file edits (stream.sh mode bits, half-applied stashes, etc.)
+git reset --hard origin/master
+# Wipe untracked junk (but keep gitignored files like stream.conf if it survived
+# the reset — git clean -fd does not remove ignored files unless -x is added).
+git clean -fd
+ok "Working tree matches origin/master."
+
+# ── 4. Restore stream.conf (or bootstrap from template) ──────────────────
+echo ""
+info "━━━ Restoring stream.conf ━━━"
+
+if [ "$SAVED_CONF" = "1" ]; then
+    cp "${BACKUP_DIR}/stream.conf.${TIMESTAMP}" "$CONF_FILE"
+    ok "Restored stream.conf from backup."
+elif [ -f "$CONF_EXAMPLE" ]; then
+    cp "$CONF_EXAMPLE" "$CONF_FILE"
+    ok "Bootstrapped stream.conf from template (you'll need to set SRT_HOST/passphrase via the dashboard)."
+else
+    err "No stream.conf and no template found — install is broken."
+    exit 1
+fi
+
+# ── 5. Keep only the 10 most recent backups ──────────────────────────────
+find "$BACKUP_DIR" -name "stream.conf.*" -type f | sort -r | tail -n +11 | xargs -r rm -f
+
+# ── 6. Refresh Python deps if requirements.txt changed ───────────────────
+if [ -d "${INSTALL_DIR}/venv" ] && [ -f "${INSTALL_DIR}/pi/requirements.txt" ]; then
+    echo ""
+    info "━━━ Updating Python packages ━━━"
+    "${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/pi/requirements.txt" || warn "pip install had issues — service may still run."
+    ok "Packages up to date."
+fi
+
+# ── 7. Start the service again ────────────────────────────────────────────
+echo ""
+info "━━━ Starting kevinstream service ━━━"
+systemctl daemon-reload
+systemctl start kevinstream
+sleep 1
+if systemctl is-active --quiet kevinstream; then
+    ok "Service is running."
+else
+    err "Service failed to start — see: sudo journalctl -u kevinstream -e"
+    exit 1
+fi
+
+echo ""
+ok "Update complete. Current commit:"
+git log --oneline -1
+echo ""
+info "Tail the logs with: sudo journalctl -u kevinstream -f"
