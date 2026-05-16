@@ -23,6 +23,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAM_SH = os.path.join(SCRIPT_DIR, "stream.sh")
 CONF_FILE = os.path.join(SCRIPT_DIR, "stream.conf")
 CONF_EXAMPLE = os.path.join(SCRIPT_DIR, "stream.conf.example")
+# Persisted across dashboard restarts so we can detect ffmpeg orphans that
+# survived because we put them in their own session (setsid) and then the
+# dashboard restarted (update-pi.sh, crash, manual systemctl restart, etc.).
+PID_FILE = "/tmp/kevinstream-ffmpeg.pid"
 
 
 def _ensure_conf_exists():
@@ -128,6 +132,80 @@ class StreamManager:
         # Migrate any pre-existing unquoted stream.conf written by older versions.
         # Idempotent — re-quoting an already-quoted value is a no-op.
         self._rewrite_conf_quoted()
+
+        # Reap any orphan ffmpeg left over from a previous dashboard process.
+        # We `setsid` ffmpeg children so they survive parent death; combined
+        # with a dashboard restart (update-pi.sh / systemctl / crash) this is
+        # the mechanism that produces "Device or resource busy" on the next
+        # Start click.
+        self._reap_previous_ffmpeg()
+
+    def _reap_previous_ffmpeg(self):
+        """On boot, kill any ffmpeg recorded by a previous dashboard process."""
+        try:
+            with open(PID_FILE) as f:
+                pid = int(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            return
+        if not self._is_process_alive(pid):
+            try:
+                os.unlink(PID_FILE)
+            except FileNotFoundError:
+                pass
+            return
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="replace")
+        except (FileNotFoundError, PermissionError):
+            cmdline = ""
+        if "ffmpeg" not in cmdline:
+            # PID was recycled to a non-ffmpeg process; don't touch it.
+            try:
+                os.unlink(PID_FILE)
+            except FileNotFoundError:
+                pass
+            return
+        log.warning("Reaping orphan ffmpeg PID %d from previous dashboard run", pid)
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for _ in range(20):  # up to 2s for graceful exit
+            if not self._is_process_alive(pid):
+                break
+            time.sleep(0.1)
+        if self._is_process_alive(pid):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        try:
+            os.unlink(PID_FILE)
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _write_pid_file(pid: int):
+        try:
+            with open(PID_FILE, "w") as f:
+                f.write(str(pid))
+        except OSError as e:
+            log.warning("Could not write PID file %s: %s", PID_FILE, e)
+
+    @staticmethod
+    def _clear_pid_file():
+        try:
+            os.unlink(PID_FILE)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("Could not remove PID file %s: %s", PID_FILE, e)
 
     def _rewrite_conf_quoted(self):
         """Re-write stream.conf so every value goes through shlex.quote.
@@ -357,26 +435,88 @@ class StreamManager:
             return False
 
     @staticmethod
-    def _kill_orphan_ffmpeg(device_path: str) -> int:
-        """Find and kill any ffmpeg processes holding a device open. Returns count killed."""
-        if not device_path or not os.path.exists(device_path):
-            return 0
+    def _find_pids_using_device(device_path: str) -> set[int]:
+        """Find PIDs of processes holding `device_path` open, using every
+        method available. Returns a set so multiple sources can be unioned
+        without dedup work. Logs each method's result for diagnostics.
 
-        # Get PIDs using the device via fuser
+        We try in order:
+          1. /proc/*/fd/* — directly readlink each fd, no external tools.
+             Most reliable; only blind spot is processes owned by other users
+             when running unprivileged.
+          2. lsof <device>  — covers anything /proc missed (some kernel quirks).
+          3. fuser <device> — last resort; needs `psmisc`.
+        """
+        found: set[int] = set()
+
+        # ── Method 1: /proc/*/fd scan ──────────────────────────────────
+        try:
+            real_dev = os.path.realpath(device_path)
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                fd_dir = f"/proc/{entry}/fd"
+                try:
+                    fds = os.listdir(fd_dir)
+                except (FileNotFoundError, PermissionError):
+                    continue
+                for fd in fds:
+                    try:
+                        target = os.readlink(f"{fd_dir}/{fd}")
+                    except (FileNotFoundError, PermissionError):
+                        continue
+                    if target == device_path or target == real_dev:
+                        found.add(int(entry))
+                        break
+        except Exception as e:
+            log.debug("proc-scan for %s failed: %s", device_path, e)
+        if found:
+            log.info("proc-scan found PIDs holding %s: %s", device_path, sorted(found))
+
+        # ── Method 2: lsof ─────────────────────────────────────────────
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", device_path],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.split():
+                if line.isdigit():
+                    found.add(int(line))
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        except Exception as e:
+            log.debug("lsof for %s failed: %s", device_path, e)
+
+        # ── Method 3: fuser ────────────────────────────────────────────
         try:
             result = subprocess.run(
                 ["fuser", device_path],
                 capture_output=True, text=True, timeout=5,
             )
             raw = (result.stdout + result.stderr).strip()
-            pids = [int(p) for p in raw.split() if p.isdigit()]
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            for p in raw.split():
+                if p.isdigit():
+                    found.add(int(p))
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        except Exception as e:
+            log.debug("fuser for %s failed: %s", device_path, e)
+
+        return found
+
+    @staticmethod
+    def _kill_orphan_ffmpeg(device_path: str) -> int:
+        """Find and kill any ffmpeg processes holding a device open. Returns count killed."""
+        if not device_path or not os.path.exists(device_path):
             return 0
 
+        pids = StreamManager._find_pids_using_device(device_path)
         if not pids:
+            log.info("orphan check: no processes found holding %s (proc/lsof/fuser all empty)", device_path)
             return 0
 
-        # Filter to only ffmpeg processes
+        # Filter to only ffmpeg processes (don't accidentally kill the dashboard
+        # itself or any unrelated process that happens to share a device).
         ffmpeg_pids = []
         for pid in pids:
             try:
@@ -384,11 +524,17 @@ class StreamManager:
                     cmdline = f.read().decode("utf-8", errors="replace")
                 if "ffmpeg" in cmdline:
                     ffmpeg_pids.append(pid)
-            except (FileNotFoundError, PermissionError):
-                pass
+                else:
+                    log.warning("PID %d holds %s but isn't ffmpeg (cmdline=%r) — leaving alone",
+                                pid, device_path, cmdline[:120])
+            except (FileNotFoundError, PermissionError) as e:
+                log.warning("PID %d holds %s but /proc unreadable (%s) — trying to kill anyway",
+                            pid, device_path, e)
+                ffmpeg_pids.append(pid)
 
         if not ffmpeg_pids:
             return 0
+        log.info("orphan ffmpeg PIDs to kill on %s: %s", device_path, ffmpeg_pids)
 
         killed = 0
         for pid in ffmpeg_pids:
@@ -623,6 +769,7 @@ class StreamManager:
                 self._speed_history.clear()
                 self._encoding_stats = {"fps": 0, "frame": 0, "speed": 0, "quality": 0, "dropped_frames": 0}
             self._last_error = ""
+            self._write_pid_file(proc.pid)
 
             self._add_log(f"FFmpeg started (PID {proc.pid})")
             log.info("FFmpeg started (PID %d)", proc.pid)
@@ -751,6 +898,7 @@ class StreamManager:
             self._stats["status"] = "stopped"
             self._stats["pid"] = None
             self._start_time = None
+        self._clear_pid_file()
 
         return True
 
@@ -927,6 +1075,7 @@ class StreamManager:
                     self._stats["status"] = "error"
                     self._stats["pid"] = None
                     self._process = None
+                self._clear_pid_file()
                 self._should_run = False
                 self._add_log(
                     f"FFmpeg crashed {self._immediate_crash_count} times within {int(runtime)}s — "
@@ -942,6 +1091,7 @@ class StreamManager:
             self._stats["status"] = "stopped"
             self._stats["pid"] = None
             self._process = None
+        self._clear_pid_file()
 
         if not self._should_run:
             self._add_log(f"FFmpeg exited (code {exit_code}), not restarting")
