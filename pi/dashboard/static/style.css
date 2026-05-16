@@ -168,6 +168,9 @@ header h1 { font-size: 18px; font-weight: 600; }
     width: 100%;
 }
 .btn-force-stop:hover { background: var(--red); color: #fff; }
+
+.btn-row-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn-row-split .btn { width: 100%; }
 .btn-restart { background: var(--orange); color: #000; }
 .btn-accent { background: var(--accent); color: #fff; }
 

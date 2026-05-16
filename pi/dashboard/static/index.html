@@ -250,7 +250,11 @@
                     <option value="15">15</option>
                 </select>
             </div>
-            <button class="btn btn-lg btn-accent" style="margin-top: 12px; width: 100%;" onclick="saveSettings()">Apply &amp; Restart</button>
+            <div class="btn-row-split" style="margin-top: 12px;">
+                <button class="btn btn-lg" id="btnSaveOnly" onclick="saveSettings(false)">Save</button>
+                <button class="btn btn-lg btn-accent" id="btnSaveRestart" onclick="saveSettings(true)">Save &amp; Restart</button>
+            </div>
+            <div id="saveModeHint" class="dim small" style="margin-top: 6px;"></div>
         </div>
 
         <!-- OBS Control -->

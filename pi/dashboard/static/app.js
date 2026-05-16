@@ -99,6 +99,7 @@ function updateStreamUI(data) {
         $("btnRestart").disabled = true;
         $("streamUptime").textContent = "";
     }
+    updateSaveModeHint();
 }
 
 function updateNetworkUI(data) {
@@ -733,10 +734,14 @@ function updateFpsForResolution() {
     }
 }
 
-async function saveSettings() {
-    const btn = document.querySelector('[onclick="saveSettings()"]');
+async function saveSettings(doRestart) {
+    // doRestart=true  → write config + restart ffmpeg (apply immediately)
+    // doRestart=false → write config only (takes effect on next manual start)
+    const btn = doRestart ? $("btnSaveRestart") : $("btnSaveOnly");
+    const otherBtn = doRestart ? $("btnSaveOnly") : $("btnSaveRestart");
     const origText = btn.textContent;
     btn.disabled = true;
+    if (otherBtn) otherBtn.disabled = true;
     btn.textContent = "Saving...";
 
     const proto = $("settingProtocol").value;
@@ -779,6 +784,16 @@ async function saveSettings() {
         updates.SRT_LATENCY = $("settingLatency").value;
     }
 
+    const resetButton = (label, color) => {
+        setTimeout(() => {
+            btn.textContent = origText;
+            btn.style.background = "";
+            btn.style.color = "";
+            btn.disabled = false;
+            if (otherBtn) otherBtn.disabled = false;
+        }, color === "var(--red)" ? 3000 : 2000);
+    };
+
     try {
         const res = await fetch("/api/stream/config", {
             method: "PUT",
@@ -786,41 +801,52 @@ async function saveSettings() {
             body: JSON.stringify(updates),
         });
         const data = await res.json();
-        if (data.ok) {
-            btn.textContent = "Saved! Restarting...";
-            btn.style.background = "var(--green)";
-            btn.style.color = "#000";
-            await streamControl("restart");
-            setTimeout(() => {
-                btn.textContent = origText;
-                btn.style.background = "";
-                btn.style.color = "";
-                btn.disabled = false;
-            }, 2000);
-        } else {
+        if (!data.ok) {
             btn.textContent = "Failed!";
             btn.style.background = "var(--red)";
             btn.style.color = "#fff";
             console.error("Save failed:", data.error);
             alert("Save failed: " + (data.error || "Unknown error"));
-            setTimeout(() => {
-                btn.textContent = origText;
-                btn.style.background = "";
-                btn.style.color = "";
-                btn.disabled = false;
-            }, 3000);
+            resetButton(origText, "var(--red)");
+            return;
         }
+        if (doRestart) {
+            btn.textContent = "Saved! Restarting...";
+            btn.style.background = "var(--green)";
+            btn.style.color = "#000";
+            await streamControl("restart");
+        } else {
+            btn.textContent = "Saved";
+            btn.style.background = "var(--green)";
+            btn.style.color = "#000";
+            // If a stream is currently live, the new values aren't active yet.
+            const live = $("streamStatus").textContent === "Live";
+            showToast(
+                live
+                    ? "Config saved — new values take effect on next Restart."
+                    : "Config saved.",
+                "info",
+            );
+        }
+        resetButton(origText, "var(--green)");
     } catch (e) {
         console.error("Save settings error:", e);
         btn.textContent = "Error!";
         btn.style.background = "var(--red)";
         alert("Could not save settings: " + e.message);
-        setTimeout(() => {
-            btn.textContent = origText;
-            btn.style.background = "";
-            btn.style.color = "";
-            btn.disabled = false;
-        }, 3000);
+        resetButton(origText, "var(--red)");
+    }
+}
+
+// Update the hint under the Save buttons based on current stream state.
+function updateSaveModeHint() {
+    const hint = $("saveModeHint");
+    if (!hint) return;
+    const live = $("streamStatus").textContent === "Live";
+    if (live) {
+        hint.textContent = "Stream is live — 'Save' writes the config without interrupting (applies on next Restart). 'Save & Restart' applies immediately (brief gap).";
+    } else {
+        hint.textContent = "'Save' writes the config. 'Save & Restart' writes and then starts the stream.";
     }
 }
 

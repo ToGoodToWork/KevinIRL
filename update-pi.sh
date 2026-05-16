@@ -96,6 +96,24 @@ fi
 # ── 5. Keep only the 10 most recent backups ──────────────────────────────
 find "$BACKUP_DIR" -name "stream.conf.*" -type f | sort -r | tail -n +11 | xargs -r rm -f
 
+# ── 5.5. Reset ownership so the dashboard (non-root) can write stream.conf ─
+SERVICE_USER=$(systemctl show -p User kevinstream --value 2>/dev/null || echo "")
+if [ -z "$SERVICE_USER" ] || [ "$SERVICE_USER" = "root" ]; then
+    # Fall back to inspecting the unit file directly.
+    SERVICE_USER=$(grep -E '^User=' /etc/systemd/system/kevinstream.service 2>/dev/null | head -1 | cut -d= -f2 || echo "")
+fi
+if [ -z "$SERVICE_USER" ]; then
+    # Last resort: assume the directory's current owner (set during setup-pi.sh).
+    SERVICE_USER=$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo "")
+fi
+if [ -n "$SERVICE_USER" ] && [ "$SERVICE_USER" != "root" ]; then
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR"
+    chmod 664 "$CONF_FILE"
+    ok "Ownership restored to ${SERVICE_USER}; stream.conf writable by dashboard."
+else
+    warn "Could not determine service user — leave ownership as-is. Dashboard config writes may fail."
+fi
+
 # ── 6. Refresh Python deps if requirements.txt changed ───────────────────
 if [ -d "${INSTALL_DIR}/venv" ] && [ -f "${INSTALL_DIR}/pi/requirements.txt" ]; then
     echo ""
