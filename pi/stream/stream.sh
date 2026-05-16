@@ -80,7 +80,14 @@ echo "==================="
 AUDIO_ARGS=""
 AUDIO_SYNC_ARGS=""
 if [ "$AUDIO_DEVICE" != "none" ]; then
-    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 1024 -i ${AUDIO_DEVICE}"
+    # Audio thread_queue_size MUST be bigger than video's. At 48kHz a 1024-frame
+    # queue is ~21ms — any USB hiccup underruns ALSA, audio stutters, and
+    # aresample then does hard sample insertion (audible click + drift).
+    # 4096 was the value before eb18857; that commit reverted video+audio
+    # buffers together to fix DJI USB disconnects, but the USB-overload root
+    # cause was the video side (-threads 4 and video queue 2048), not this.
+    # Keep video at 1024, but give audio room to breathe.
+    AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 4096 -i ${AUDIO_DEVICE}"
     # Keep native 48000Hz to avoid resampling overhead, async=1 corrects A/V drift
     AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 48000 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
 fi
