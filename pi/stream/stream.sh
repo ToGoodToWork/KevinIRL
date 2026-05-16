@@ -88,8 +88,14 @@ if [ "$AUDIO_DEVICE" != "none" ]; then
     # cause was the video side (-threads 4 and video queue 2048), not this.
     # Keep video at 1024, but give audio room to breathe.
     AUDIO_ARGS="-use_wallclock_as_timestamps 1 -f alsa -ac ${AUDIO_CHANNELS:-2} -ar 48000 -thread_queue_size 4096 -i ${AUDIO_DEVICE}"
-    # Keep native 48000Hz to avoid resampling overhead, async=1 corrects A/V drift
-    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 48000 -b:a ${AUDIO_BITRATE} -af aresample=async=1"
+    # Keep native 48000Hz to avoid resampling overhead. aresample=async=N is
+    # "max N samples/sec of stretch/squeeze compensation" — async=1 (the old
+    # value) is essentially zero correction and lets USB-clock drift
+    # accumulate into minutes of audio lag over a long stream. async=1000 is
+    # FFmpeg's standard live-capture value (~2% rate adjustment headroom).
+    # Don't add min_hard_comp=0.1 here — that's the trigger for hard
+    # sample-drop correction and causes audible pops below 0.5s.
+    AUDIO_SYNC_ARGS="-c:a aac -ac 2 -ar 48000 -b:a ${AUDIO_BITRATE} -af aresample=async=1000"
 fi
 
 # Build encoder-specific args and rate control
