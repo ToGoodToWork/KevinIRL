@@ -183,17 +183,23 @@ If all connections fail, the Pi automatically creates a WiFi hotspot called **Ke
 
 ## Updating
 
-On the Pi, run the updater script:
+The Pi pulls from `origin/master` on GitHub — there's no direct push from your
+dev machine. The flow is always:
 
-```bash
-sudo bash /opt/kevinstream/update-pi.sh
-```
+1. On your dev machine: `git push` to `origin/master`.
+2. On the Pi, run the remote updater (this `curl`s the latest `update-pi.sh`
+   itself, so it works even if the local copy on the Pi has drifted):
 
-Or one-shot from anywhere:
+   ```bash
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/master/update-pi.sh)"
+   ```
 
-```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/ToGoodToWork/KevinIRL/master/update-pi.sh)"
-```
+   Equivalent local form if you've already SSH'd in and want to use the
+   on-disk script:
+
+   ```bash
+   sudo bash /opt/kevinstream/update-pi.sh
+   ```
 
 The updater:
 
@@ -202,9 +208,16 @@ The updater:
 3. **Hard-resets** the repo to `origin/master` — wipes any local edits or
    untracked junk that accumulated in the source tree.
 4. Restores your `stream.conf` (or bootstraps from `stream.conf.example` if
-   there wasn't one).
-5. Reinstalls Python packages if needed.
+   there wasn't one), then chowns it back to the dashboard user so non-root
+   config saves still work.
+5. Reinstalls Python packages if `requirements.txt` changed.
 6. Starts the service back up.
+
+The dashboard reads/writes `stream.conf` through `shlex.quote` / `shlex.split`,
+so device names with spaces or parens (`Wireless Microphone RX`,
+`OsmoPocket3 (usb-...)`) survive being bash-`source`d in `stream.sh`. On boot,
+`StreamManager` re-quotes any pre-existing unquoted values, so upgrading from
+an older version self-heals on first restart.
 
 `pi/stream/stream.conf` is gitignored — your SRT host, passphrase, device
 selections, and bitrate live there and are never touched by pulls. The
@@ -254,10 +267,45 @@ arecord -l
 
 Tested primary rig:
 
-- **Camera:** DJI Osmo Action as USB webcam (UVC, MJPEG 1920×1080 @ 30fps). Registers multiple `/dev/videoN` nodes — the dashboard auto-picks the right capture node. Hardware encoder (`h264_v4l2m2m`) handles this at 2500–3500 kbps comfortably on a Pi 4.
-- **Microphone:** DJI Mic as USB audio (ALSA `plughw:CARD,0`, stereo s16le 48kHz). The Mic's ALSA card index can shift between reboots — the Pi resolves it back to the right `plughw:` automatically using the friendly name saved in `VIDEO_DEVICE_NAME` / `AUDIO_DEVICE_NAME`.
+- **Camera:** DJI Osmo Pocket 3 (or Osmo Action) as USB webcam — standard UVC,
+  MJPEG 1920×1080 @ 30fps. Registers multiple `/dev/videoN` nodes; the
+  dashboard auto-picks the right capture node. Hardware encoder
+  (`h264_v4l2m2m`) handles this at 2500–3500 kbps comfortably on a Pi 4.
+- **Microphone:** DJI Wireless Mic RX *or* the camera's built-in mic — both
+  expose themselves as standard UAC (USB Audio Class) devices to ALSA. No
+  drivers needed; mainline `uvcvideo` and `snd-usb-audio` cover both.
 
-The dashboard auto-selects devices whose name contains "DJI" or "Osmo" on plug-in, so the normal workflow is: plug both in, open the dashboard, click **Start**.
+The ALSA card index for a USB audio device can shift between reboots — the
+Pi resolves it back to the right `plughw:CARD,0` automatically using the
+friendly name saved in `VIDEO_DEVICE_NAME` / `AUDIO_DEVICE_NAME`.
+
+### Auto-detect priority
+
+When multiple mics are plugged in, the dashboard picks one using priority
+tiers (`pi/dashboard/devices.py::_mic_priority`):
+
+| Tier | Match | Example | Channels |
+|-----:|-------|---------|---------:|
+| 30 | `wireless microphone`, `dji mic`, `rx` | DJI Wireless Mic RX | 1 (mono) |
+| 20 | `dji`, `osmo`, `pocket` | DJI Pocket 3 built-in | 2 (stereo) |
+| 10 | `usb` + `mic` | Generic USB mic | 2 |
+| 0  | anything else | unknown card | 2 |
+
+If you have both a DJI Pocket and a DJI Wireless Mic plugged in, the Wireless
+Mic wins. The monitor will also **upgrade** between known tiers automatically
+— plugging in the Wireless Mic on top of an already-running Pocket pick will
+swap to the Wireless Mic and set `AUDIO_CHANNELS=1` without a manual save.
+A generic / unknown user pick is never overridden.
+
+The normal workflow is: plug everything in, open the dashboard, click **Start**.
+
+### SRT passphrase length
+
+If you set an `SRT_PASSPHRASE`, the SRT protocol requires it to be **10–79
+characters**. Outside that range, `stream.sh` skips the passphrase with a
+warning in the log and streams **unencrypted** — make sure the receiver side
+also has no passphrase set when this happens, or it will refuse the
+connection. Set a 10+ char passphrase on both ends for an encrypted stream.
 
 ## License
 
